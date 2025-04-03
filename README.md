@@ -10,12 +10,12 @@
     <img src="https://img.shields.io/github/stars/ByteDance-Seed/VeOmni?style=social"></a>
   <a href="https://github.com/ByteDance-Seed/VeOmni">
     <img src="https://img.shields.io/badge/VeOmni-Project Page-yellow"></a>
-  <a href="XXXX">
+  <a href="https://github.com/ByteDance-Seed/VeOmni">
     <img src="https://img.shields.io/badge/VeOmni-Tech Report-red"></a>
   <a href="https://huggingface.co/ByteDance-Seed">
     <img src="https://img.shields.io/badge/VeOmni-Hugging Face-orange"></a>
   <br>
-  <a href="XXX">
+  <a href="https://github.com/ByteDance-Seed/VeOmni">
     <img src="https://img.shields.io/badge/VeOmni-Wechat Communication Group-07C160"></a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-Apache--2.0-blue"></a>
@@ -257,7 +257,7 @@ bash train.sh  tasks/train_torch.py configs/pretrain/llama3.yaml
 
 > VeOmni Support all [transformers](https://github.com/huggingface/transformers) models if you don't need sequence parallelism or experts parallelism or other parallelism and cuda kernal optimize in VeOmni. We design a [model registry mechanism](veomni/models/registry.py). When the model is registered in veomni, we will automatically load the model and optimizer in VeOmni. Otherwise, it will default to load the modeling file in transformers.
 
-> If you want to add a new model, you can add a new model in the model registry. See in [Support costom model]() docs.
+> If you want to add a new model, you can add a new model in the model registry. See in [Support costom model](docs/tutorials/model_loader.md) docs.
 
 ## ⛰️ Performance
 
