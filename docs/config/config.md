@@ -32,7 +32,7 @@
 #### Training configuration arguments
 | Name | Type | Description | Default Value |
 | --- | --- | --- | --- |
-| train.output_dir | str | Path to save the model. It is recommended to use the hdfs or hdfs fuse path. | Required |
+| train.output_dir | str | Path to save the model. | Required |
 | train.lr | float | Maximum learning rate. | 5e - 5 |
 | train.lr_min | float | Minimum learning rate. | 1e - 7 |
 | train.weight_decay | float | Weight decay coefficient. | 0 |

@@ -1,6 +1,5 @@
 blobfile>=3.0.0
 bytecheckpoint
-byted-hdfs-io # https://www.piwheels.org/project/byted-hdfs-io/
 datasets>=2.16.0,<=2.21.0
 diffusers>=0.30.0,<=0.31.0
 flash-attn>=2.6.3

@@ -41,15 +41,15 @@ logger = logging.get_logger(__name__)
 class ModelArguments:
     config_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Local path/HDFS path to the model config. Defaults to `model_path`."},
+        metadata={"help": "Path to the model config. Defaults to `model_path`."},
     )
     model_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Local path/HDFS path to the pre-trained model. If unspecified, use random init."},
+        metadata={"help": "Path to the pre-trained model. If unspecified, use random init."},
     )
     tokenizer_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Local path/HDFS path to the tokenizer. Defaults to `config_path`."},
+        metadata={"help": "Path to the tokenizer. Defaults to `config_path`."},
     )
     encoders: Dict[Literal["image"], Dict[str, str]] = field(
         default_factory=dict,
@@ -118,9 +118,7 @@ class ModelArguments:
 @dataclass
 class DataArguments:
     train_path: str = field(
-        metadata={
-            "help": "Local path/HDFS path/Magnus name of the training data. Use comma to separate multiple datasets."
-        },
+        metadata={"help": "Path of the training data. Use comma to separate multiple datasets."},
     )
     train_size: int = field(
         default=10_000_000,
@@ -501,11 +499,11 @@ class TrainingArguments:
 @dataclass
 class InferArguments:
     model_path: str = field(
-        metadata={"help": "Local path/HDFS path to the pre-trained model."},
+        metadata={"help": "Path to the pre-trained model."},
     )
     tokenizer_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Local path/HDFS path to the tokenizer. Defaults to `config_path`."},
+        metadata={"help": "Path to the tokenizer. Defaults to `config_path`."},
     )
     seed: int = field(
         default=42,

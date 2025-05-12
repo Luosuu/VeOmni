@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Literal, Optional, Sequence, Tuple, Union
 
 import torch
-from hdfs_io import hput
 from torch import distributed as dist
 from torch import nn
 from tqdm import tqdm
@@ -30,7 +29,7 @@ from transformers.utils.hub import cached_file, get_checkpoint_shard_files
 from transformers.utils.import_utils import is_safetensors_available
 
 from ..utils import logging
-from ..utils.helper import empty_cache, get_cache_dir, get_dtype_size
+from ..utils.helper import empty_cache, get_dtype_size
 
 
 if is_safetensors_available():
@@ -307,13 +306,6 @@ def save_model_weights(
 
     If global_rank is given, it will assume it is executed on all ranks.
     """
-    if output_dir.startswith("hdfs://"):
-        hdfs_dir = output_dir
-        hdfs_upper_dir = output_dir.rstrip("/")
-        hdfs_upper_dir = hdfs_upper_dir[: hdfs_upper_dir.rfind("/")]
-        output_dir = get_cache_dir(output_dir)
-    else:
-        hdfs_dir = None
 
     os.makedirs(output_dir, exist_ok=True)
     is_sharded, total_size, weight_map = _get_shard_info(state_dict, save_dtype, shard_size, safe_serialization)
@@ -369,26 +361,10 @@ def save_model_weights(
                 else:
                     logger.warning(f"Model asset {model_asset} should implement `save_pretrained`.")
 
-        if hdfs_dir is not None:
-            hput(output_dir, hdfs_upper_dir, force=True, thread_num=32, chunk_thread_num=32, chunk_size=128)
-            logger.info(f"Model weights uploaded to {hdfs_dir}.")
-
 
 def save_model_assets(output_dir: Union[str, "os.PathLike"], model_assets: Sequence["ModelAssets"]):
-    if output_dir.startswith("hdfs://"):
-        hdfs_dir = output_dir
-        hdfs_upper_dir = output_dir.rstrip("/")
-        hdfs_upper_dir = hdfs_upper_dir[: hdfs_upper_dir.rfind("/")]
-        output_dir = get_cache_dir(output_dir)
-    else:
-        hdfs_dir = None
-
     for model_asset in model_assets:
         if hasattr(model_asset, "save_pretrained"):
             model_asset.save_pretrained(output_dir)
         else:
             logger.warning(f"Model asset {model_asset} should implement `save_pretrained`.")
-
-    if hdfs_dir is not None:
-        hput(output_dir, hdfs_upper_dir, force=True, thread_num=32, chunk_thread_num=32, chunk_size=128)
-        logger.info(f"Model config and tokenizer uploaded to {hdfs_dir}.")
