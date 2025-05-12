@@ -50,7 +50,6 @@ NPU_REQUIRE = ["torchvision>=0.16.0,<0.16.1"]
 EXTRAS_REQUIRE = {"dev": ["pre-commit>=4.0.0,<5.0", "ruff>=0.7.0,<1.0", "pytest>=6.0.0,<8.0", "expecttest>=0.3.0"]}
 
 BASE_REQUIRE = [
-    "byted-hdfs-io",
     "datasets>=2.16.0,<=2.21.0",
     "diffusers>=0.30.0,<=0.31.0",
     "packaging>=23.0,<26.0",

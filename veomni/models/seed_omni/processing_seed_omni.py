@@ -15,8 +15,7 @@
 
 import os
 
-from hdfs_io import hexists
-from transformers import AutoProcessor, BatchFeature, ProcessorMixin
+from transformers import BatchFeature, ProcessorMixin
 
 from ...utils import logging
 
@@ -111,12 +110,6 @@ class SeedOmniProcessor(ProcessorMixin):
             processor = processor[0]
 
         for prefix in cls.processor_prefixes:
-            if hexists(pretrained_model_name_or_path + f"/{prefix}_processor"):
-                sub_processor = AutoProcessor.from_pretrained(
-                    pretrained_model_name_or_path, subfolder=f"{prefix}_processor"
-                )
-                setattr(processor, f"{prefix}_processor", sub_processor)
-            else:
-                setattr(processor, f"{prefix}_processor", None)
+            setattr(processor, f"{prefix}_processor", None)
 
         return processor
