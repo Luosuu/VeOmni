@@ -12,23 +12,3 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from transformers import (
-    AutoConfig,
-    AutoModel,
-    AutoModelForCausalLM,
-    AutoModelForSequenceClassification,
-    AutoModelForTokenClassification,
-)
-
-from .configuration_deepseek import DeepseekV3Config
-from .modeling_deepseek import (
-    DeepseekV3ForCausalLM,
-    DeepseekV3ForSequenceClassification,
-    DeepseekV3Model,
-)
-
-
-AutoConfig.register("deepseek_v3", DeepseekV3Config)
-AutoModel.register(DeepseekV3Config, DeepseekV3Model)
-AutoModelForCausalLM.register(DeepseekV3Config, DeepseekV3ForCausalLM)
-AutoModelForSequenceClassification.register(DeepseekV3Config, DeepseekV3ForSequenceClassification)
