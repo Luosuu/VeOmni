@@ -132,9 +132,9 @@ def vlm_images_a2a_meta(
     Usually we will split the batches of images for vision encoder in sp group. However, before we feed images
     tokens into language model, we need to use all2all communication to gather necessary tokens into the current rank.
     """
-    assert (
-        sum(image_lens) == image_masks.sum().item()
-    ), f"The sum of image_lens must be equal to the number of tokens, {image_lens} vs {image_masks.sum().item()}"
+    assert sum(image_lens) == image_masks.sum().item(), (
+        f"The sum of image_lens must be equal to the number of tokens, {image_lens} vs {image_masks.sum().item()}"
+    )
     seq_len = image_masks.shape[1]
     step = (seq_len + sp_size - 1) // sp_size
     sequence_per_rank = [min(step * (i + 1), seq_len) - min(step * i, seq_len) for i in range(sp_size)]

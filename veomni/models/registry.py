@@ -61,14 +61,14 @@ class _ModelRegistry:
                     entry = module.ModelClass
                     if isinstance(entry, list):
                         for tmp in entry:
-                            assert (
-                                tmp.__name__ not in self.model_arch_name_to_cls
-                            ), f"Duplicated model implementation for {tmp.__name__}"
+                            assert tmp.__name__ not in self.model_arch_name_to_cls, (
+                                f"Duplicated model implementation for {tmp.__name__}"
+                            )
                             self.model_arch_name_to_cls[tmp.__name__] = tmp
                     else:
-                        assert (
-                            entry.__name__ not in self.model_arch_name_to_cls
-                        ), f"Duplicated model implementation for {entry.__name__}"
+                        assert entry.__name__ not in self.model_arch_name_to_cls, (
+                            f"Duplicated model implementation for {entry.__name__}"
+                        )
                         self.model_arch_name_to_cls[entry.__name__] = entry
 
 

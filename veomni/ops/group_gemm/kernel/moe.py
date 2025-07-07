@@ -395,9 +395,9 @@ def moe_index_compute(experts_for_tokens: torch.Tensor, expert_histogram_cumsum:
     assert experts_for_tokens.is_contiguous()
     assert experts_for_tokens.numel() < (1 << 31) - 1
     assert expert_histogram_cumsum.is_contiguous()
-    assert (
-        experts_for_tokens.device == expert_histogram_cumsum.device
-    ), f"experts_for_tokens.device = {experts_for_tokens.device}, expert_histogram_cumsum.device = {expert_histogram_cumsum.device}"
+    assert experts_for_tokens.device == expert_histogram_cumsum.device, (
+        f"experts_for_tokens.device = {experts_for_tokens.device}, expert_histogram_cumsum.device = {expert_histogram_cumsum.device}"
+    )
 
     BLOCK_SIZE = 128  # Faster than 1024, not sure why. May be better occupancy?
 
