@@ -437,9 +437,9 @@ class TrainingArguments:
             raise ValueError("`rmpad` and `rmpad_with_pos_ids` cannot be both True.")
 
         # init method check
-        assert (
-            self.expert_parallel_size == 1 or self.init_device != "cpu"
-        ), "cpu init is not supported when enable ep. Please use `init_device = cuda` or `init_device = meta` instead."
+        assert self.expert_parallel_size == 1 or self.init_device != "cpu", (
+            "cpu init is not supported when enable ep. Please use `init_device = cuda` or `init_device = meta` instead."
+        )
 
         # calculate gradient accumulation steps
         if self.global_batch_size is None:

@@ -49,9 +49,9 @@ def _shard_tensor(orgin_tensor: torch.Tensor, device_mesh: DeviceMesh, shard: Sh
         shard (Shard): The shard info, default Shard(0).
 
     """
-    assert isinstance(
-        orgin_tensor, torch.Tensor
-    ), f"Only support torch.Tensor, got {type(orgin_tensor)}, for DTensor, use _shard_tensor instead."
+    assert isinstance(orgin_tensor, torch.Tensor), (
+        f"Only support torch.Tensor, got {type(orgin_tensor)}, for DTensor, use _shard_tensor instead."
+    )
 
     dtensor = DTensor.from_local(orgin_tensor, device_mesh=device_mesh, placements=[shard])
 
@@ -68,9 +68,9 @@ def _shard_dtensor(orgin_dtensor: DTensor, device_mesh: DeviceMesh, shard: Shard
         shard (Shard): The shard info, default Shard(0).
 
     """
-    assert isinstance(
-        orgin_dtensor, DTensor
-    ), f"Only support DTensor, got {type(orgin_dtensor)}, for torch.Tensor, use _shard_dtensor instead."
+    assert isinstance(orgin_dtensor, DTensor), (
+        f"Only support DTensor, got {type(orgin_dtensor)}, for torch.Tensor, use _shard_dtensor instead."
+    )
 
     local_tensor = orgin_dtensor.to_local()
 
@@ -81,9 +81,9 @@ def check_any_unflat_param_names_match(unflat_param_name: str, fqn2spec_info: Di
     assert isinstance(unflat_param_name, str), f"unflat_param_name must be a str, got {type(unflat_param_name)}"
 
     if prefix:
-        assert unflat_param_name.startswith(
-            prefix
-        ), f"unflat_param_name {unflat_param_name} must start with prefix {prefix}"
+        assert unflat_param_name.startswith(prefix), (
+            f"unflat_param_name {unflat_param_name} must start with prefix {prefix}"
+        )
         unflat_param_name = unflat_param_name[len(prefix) :].lstrip(".")
 
     if unflat_param_name not in fqn2spec_info:
@@ -100,16 +100,16 @@ def check_all_unflat_param_names_match(unflat_param_names: Tuple[str], fqn2spec_
     """
     Check
     """
-    assert isinstance(
-        unflat_param_names, (list, tuple)
-    ), f"unflat_param_names must be a list or tuple, got {type(unflat_param_names)}"
+    assert isinstance(unflat_param_names, (list, tuple)), (
+        f"unflat_param_names must be a list or tuple, got {type(unflat_param_names)}"
+    )
 
     unflat_len = len(unflat_param_names)
     cnt = 0
     for names in unflat_param_names:
-        assert (
-            names in fqn2spec_info
-        ), f"unflat_param_names {unflat_param_names} must be in fqn2spec_info {fqn2spec_info}"
+        assert names in fqn2spec_info, (
+            f"unflat_param_names {unflat_param_names} must be in fqn2spec_info {fqn2spec_info}"
+        )
         if isinstance(fqn2spec_info[names].placement, Shard):
             cnt += 1
     assert cnt == 0 or cnt == unflat_len, f"unflat_param_names {unflat_param_names} must be all shard or all not shard"

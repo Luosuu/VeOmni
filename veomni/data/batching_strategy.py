@@ -197,9 +197,9 @@ class TextBatchingStrategy(BaseBatchingStrategy):
         self._step = step
         n_token_per_iter = self.get_token_num_to_request()
         cur_token_micro_bsz = self.get_cur_token_micro_bsz()
-        assert (
-            cur_token_micro_bsz % n_token_per_iter == 0
-        ), "The token num to get for each request should be divisible by token micro bsz."
+        assert cur_token_micro_bsz % n_token_per_iter == 0, (
+            "The token num to get for each request should be divisible by token micro bsz."
+        )
         n_iter = int(cur_token_micro_bsz // n_token_per_iter)
         data = []
         for i in range(n_iter):

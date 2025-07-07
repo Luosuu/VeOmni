@@ -149,9 +149,9 @@ def run_checkpointer_test():
     resume_loss: "torch.Tensor" = model(**micro_batch, use_cache=False).loss.mean()
 
     logger.info(f"rank {args.train.local_rank} loss: {loss}, resume_loss: {resume_loss}")
-    assert torch.allclose(
-        loss, resume_loss
-    ), f"rank {args.train.local_rank} loss is not equal, loss: {loss}, resume_loss: {resume_loss}"
+    assert torch.allclose(loss, resume_loss), (
+        f"rank {args.train.local_rank} loss is not equal, loss: {loss}, resume_loss: {resume_loss}"
+    )
 
     logger.info(f"[rank{args.train.local_rank}] finish!!!!!")
 
