@@ -328,6 +328,14 @@ class TrainingArguments:
         default="ddp",
         metadata={"help": "Data parallel mode."},
     )
+    data_parallel_replicate_size: int = field(
+        default=-1,
+        metadata={"help": "Data parallel replicate size."},
+    )
+    data_parallel_shard_size: int = field(
+        default=-1,
+        metadata={"help": "Data parallel shard degree."},
+    )
     tensor_parallel_size: int = field(
         default=1,
         metadata={"help": "Tensor parallel size."},
@@ -422,16 +430,43 @@ class TrainingArguments:
         self.local_rank = int(os.getenv("LOCAL_RANK"))
         self.global_rank = int(os.getenv("RANK"))
         self.world_size = int(os.getenv("WORLD_SIZE"))
-        if self.context_parallel_size > 1 or self.ulysses_parallel_size > 1:
-            if self.world_size % (self.context_parallel_size * self.ulysses_parallel_size) != 0:
-                raise ValueError("World size should be a multiple of context_parallel_size * ulysses_parallel_size.")
-
-            self.data_parallel_size = self.world_size // (self.context_parallel_size * self.ulysses_parallel_size)
+        if (
+            self.world_size
+            % (
+                self.pipeline_parallel_size
+                * self.ulysses_parallel_size
+                * self.context_parallel_size
+                * self.tensor_parallel_size
+            )
+            != 0
+        ):
+            raise ValueError(
+                f"World size should be a multiple of pipeline_parallel_size: {self.pipeline_parallel_size}, ulysses_parallel_size: {self.ulysses_parallel_size}, context_parallel_size: {self.context_parallel_size}, tensor_parallel_size: {self.tensor_parallel_size}."
+            )
+        assert self.tensor_parallel_size == 1, "Tensor parallel size not supported yet."
+        assert self.pipeline_parallel_size == 1, "Pipeline parallel size not supported yet."
+        self.data_parallel_size = self.world_size // (
+            self.pipeline_parallel_size
+            * self.ulysses_parallel_size
+            * self.context_parallel_size
+            * self.tensor_parallel_size
+        )
+        # configure data parallel size
+        if self.data_parallel_replicate_size > 0 and self.data_parallel_shard_size > 0:
+            assert self.data_parallel_size == self.data_parallel_replicate_size * self.data_parallel_shard_size, (
+                f"data_parallel_size should be equal to data_parallel_replicate_size: {self.data_parallel_replicate_size} * data_parallel_shard_size: {self.data_parallel_shard_size}."
+            )
+        elif self.data_parallel_replicate_size > 0:
+            if self.data_parallel_size % self.data_parallel_replicate_size != 0:
+                raise ValueError("data_parallel_size should be a multiple of data_parallel_replicate_size.")
+            self.data_parallel_shard_size = self.data_parallel_size // self.data_parallel_replicate_size
+        elif self.data_parallel_shard_size > 0:
+            if self.data_parallel_size % self.data_parallel_shard_size != 0:
+                raise ValueError("data_parallel_size should be a multiple of data_parallel_shard_size.")
+            self.data_parallel_replicate_size = self.data_parallel_size // self.data_parallel_shard_size
         else:
-            if self.world_size % (self.tensor_parallel_size * self.pipeline_parallel_size) != 0:
-                raise ValueError("World size should be a multiple of tensor_parallel_size * pipeline_parallel_size.")
-
-            self.data_parallel_size = self.world_size // (self.tensor_parallel_size * self.pipeline_parallel_size)
+            self.data_parallel_replicate_size = 1
+            self.data_parallel_shard_size = self.data_parallel_size
 
         if self.rmpad and self.rmpad_with_pos_ids:
             raise ValueError("`rmpad` and `rmpad_with_pos_ids` cannot be both True.")
