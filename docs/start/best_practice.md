@@ -83,6 +83,8 @@ from veomni.distributed.parallel_state import get_parallel_state, init_parallel_
 
 init_parallel_state(
     dp_size=args.train.data_parallel_size, # data parallel size
+    dp_replicate_size=args.train.data_parallel_replicate_size, # data parallel replicate size
+    dp_shard_size=args.train.data_parallel_shard_size, # data parallel shard degree
     tp_size=args.train.tensor_parallel_size, # tensor parallel size
     ep_size=args.train.expert_parallel_size, # expert parallel size
     pp_size=args.train.pipeline_parallel_size, # pipeline parallel size, not support now

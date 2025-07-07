@@ -150,14 +150,18 @@ def build_parallelize_model(
             wrap_policy = partial(
                 lambda_auto_wrap_policy, lambda_fn=lambda module: module.__class__.__name__ in basic_modules
             )
+            # set fsdp/hsdp sharding strategy
+            if parallel_state.fsdp_mesh.ndim > 1 and parallel_state.fsdp_mesh.size() > 1:
+                strategy = ShardingStrategy.HYBRID_SHARD
+            else:
+                strategy = ShardingStrategy.FULL_SHARD
 
             fsdp_kwargs = {
                 "auto_wrap_policy": wrap_policy,
                 "ignored_states": fsdp_no_shard_states,
                 "device_id": torch.cuda.current_device(),
-                "sharding_strategy": ShardingStrategy.FULL_SHARD if enable_full_shard else ShardingStrategy.NO_SHARD,
-                "device_mesh": parallel_state.fsdp_mesh,
-                **kwargs.pop("fsdp_kwargs", {}),
+                "sharding_strategy": strategy if enable_full_shard else ShardingStrategy.NO_SHARD,
+                "use_orig_params": True,
             }
 
             if enable_mixed_precision:

@@ -144,6 +144,8 @@ def main():
 
     init_parallel_state(
         dp_size=args.train.data_parallel_size,
+        dp_replicate_size=args.train.data_parallel_replicate_size,
+        dp_shard_size=args.train.data_parallel_shard_size,
         tp_size=args.train.tensor_parallel_size,
         ep_size=args.train.expert_parallel_size,
         pp_size=args.train.pipeline_parallel_size,
