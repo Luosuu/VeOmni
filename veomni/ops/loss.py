@@ -35,6 +35,7 @@ fused_linear_cross_entropy = None
 
 if is_liger_kernel_available():
     from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss  # type: ignore
+
     fused_linear_cross_entropy = LigerFusedLinearCrossEntropyLoss(reduction="mean")
 
 

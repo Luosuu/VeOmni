@@ -42,7 +42,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-            
+
             ...
 
         final_hidden_states = torch.zeros(
@@ -102,7 +102,7 @@ class Qwen3MoeSparseFusedMoeBlock(nn.Module):
       self.experts = Qwen3MoeExperts(config)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-      
+
           ...
 
       final_hidden_states = fused_moe_forward(
@@ -120,5 +120,5 @@ class Qwen3MoeSparseFusedMoeBlock(nn.Module):
 
 3. Train qwen3 moe model
 ```
-bash train.sh tasks/train_torch.py configs/pretrain/qwen3-moe.yaml 
+bash train.sh tasks/train_torch.py configs/pretrain/qwen3-moe.yaml
 ```

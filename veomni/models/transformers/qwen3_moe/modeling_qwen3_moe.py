@@ -45,14 +45,13 @@ from transformers.utils.deprecation import deprecate_kwarg
 
 from ....distributed.moe import preprocess, token_pre_all2all, tokens_post_all2all
 from ....distributed.parallel_state import get_parallel_state
-from ....utils.import_utils import is_fused_moe_available
 from ....distributed.sequence_parallel import (
     gather_heads_scatter_seq,
     gather_seq_scatter_heads,
 )
 from ....ops.loss import causallm_loss_function
 from ....utils import logging
-from ....utils.import_utils import is_liger_kernel_available
+from ....utils.import_utils import is_fused_moe_available, is_liger_kernel_available
 from .configuration_qwen3_moe import Qwen3MoeConfig
 
 

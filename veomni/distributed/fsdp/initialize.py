@@ -26,7 +26,6 @@ from safetensors.torch import load_file
 from torch.distributed._tensor import Replicate, Shard
 
 from ...utils import logging
-from ...utils.helper import CACHE_DIR
 from ..parallel_plan import SpecInfo
 
 

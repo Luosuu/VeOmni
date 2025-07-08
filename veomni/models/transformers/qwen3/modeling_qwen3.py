@@ -208,13 +208,13 @@ class Qwen3Attention(nn.Module):
         if get_parallel_state().ulysses_enabled:
             ulysses_group = get_parallel_state().ulysses_group
             ulysses_size = get_parallel_state().ulysses_size
-            assert (
-                self.config.num_attention_heads % ulysses_size == 0
-            ), f"num_query_heads ({self.config.num_attention_heads}) must be divisible by ulysses_size ({ulysses_size})"
+            assert self.config.num_attention_heads % ulysses_size == 0, (
+                f"num_query_heads ({self.config.num_attention_heads}) must be divisible by ulysses_size ({ulysses_size})"
+            )
             if ulysses_size > self.config.num_key_value_heads:
-                assert (
-                    ulysses_size % self.config.num_key_value_heads == 0
-                ), f"ulysses_size ({ulysses_size}) must be divisible by num_key_value_heads ({self.config.num_key_value_heads})"
+                assert ulysses_size % self.config.num_key_value_heads == 0, (
+                    f"ulysses_size ({ulysses_size}) must be divisible by num_key_value_heads ({self.config.num_key_value_heads})"
+                )
                 n_repeat = ulysses_size // self.config.num_key_value_heads
                 key_states = repeat_kv(key_states, n_repeat)
                 value_states = repeat_kv(value_states, n_repeat)

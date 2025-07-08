@@ -18,7 +18,6 @@ import os
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass
-from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Literal, Optional, Sequence, Tuple, Union
 
 import torch
@@ -30,7 +29,7 @@ from transformers.utils.hub import cached_file, get_checkpoint_shard_files
 from transformers.utils.import_utils import is_safetensors_available
 
 from ..utils import logging
-from ..utils.helper import empty_cache, get_cache_dir, get_dtype_size
+from ..utils.helper import empty_cache, get_dtype_size
 
 
 if is_safetensors_available():
@@ -281,7 +280,7 @@ def _get_shard_info(
         is_sharded = True
         for shard_idx, shard in enumerate(shard_list):
             prefix, extension = weights_name.rsplit(".", maxsplit=1)
-            file_name = f"{prefix}-{shard_idx+1:05d}-of-{num_shards:05d}.{extension}"
+            file_name = f"{prefix}-{shard_idx + 1:05d}-of-{num_shards:05d}.{extension}"
             for name in shard:
                 weight_map[name] = file_name
 
@@ -374,7 +373,6 @@ def save_model_weights(
 
 
 def save_model_assets(output_dir: Union[str, "os.PathLike"], model_assets: Sequence["ModelAssets"]):
-
     for model_asset in model_assets:
         if hasattr(model_asset, "save_pretrained"):
             model_asset.save_pretrained(output_dir)
