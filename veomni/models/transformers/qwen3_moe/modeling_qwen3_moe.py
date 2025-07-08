@@ -52,7 +52,7 @@ from ....distributed.sequence_parallel import (
 )
 from ....ops.loss import causallm_loss_function
 from ....utils import logging
-from ....utils.import_utils import is_liger_kernel_available, is_seed_models_available
+from ....utils.import_utils import is_liger_kernel_available
 from .configuration_qwen3_moe import Qwen3MoeConfig
 
 

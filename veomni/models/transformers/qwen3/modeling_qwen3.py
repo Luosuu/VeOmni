@@ -31,7 +31,7 @@ from ....distributed.sequence_parallel import (
 )
 from ....ops.loss import causallm_loss_function
 from ....utils import logging
-from ...module_utils import GradientCheckpointingLayer
+from ...modeling_layers import GradientCheckpointingLayer
 
 
 if is_torch_flex_attn_available():

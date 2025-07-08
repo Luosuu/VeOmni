@@ -56,6 +56,7 @@ def build_foundation_model(
     moe_implementation: Optional[Literal["eager", "fused"]] = None,
     init_device: Literal["cpu", "cuda", "meta"] = "cuda",
     config_kwargs: Optional[Dict[str, Any]] = None,
+    force_use_huggingface: bool = False,
 ) -> "PreTrainedModel":
     """
     Builds the foundation model.
@@ -65,16 +66,15 @@ def build_foundation_model(
     if config_kwargs is None:
         config_kwargs = {}
 
-    if moe_implementation is not None:
-        config_kwargs["_moe_implementation"] = moe_implementation
-        logger.info_rank0(f"Moe implementation: {moe_implementation}")
-        logger.info_rank0(f"config_kwargs: {config_kwargs}")
-        if moe_implementation not in ["eager", "fused"]:
-            raise ValueError(f"Invalid moe_implementation: {moe_implementation}")
-
     config = AutoConfig.from_pretrained(config_path, trust_remote_code=True, **config_kwargs)
 
-    loader: Optional[BaseModelLoader] = get_loader(config)
+    if moe_implementation is not None:
+        if moe_implementation not in ["eager", "fused"]:
+            raise ValueError(f"Invalid moe_implementation: {moe_implementation}")
+        config._moe_implementation = moe_implementation
+        logger.info_rank0(f"Moe implementation: {moe_implementation}")
+
+    loader: Optional[BaseModelLoader] = get_loader(config, force_use_huggingface)
 
     init_kwargs = {
         "config": config,

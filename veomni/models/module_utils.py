@@ -18,6 +18,7 @@ import os
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Literal, Optional, Sequence, Tuple, Union
 
 import torch
@@ -29,7 +30,7 @@ from transformers.utils.hub import cached_file, get_checkpoint_shard_files
 from transformers.utils.import_utils import is_safetensors_available
 
 from ..utils import logging
-from ..utils.helper import empty_cache, get_dtype_size
+from ..utils.helper import empty_cache, get_cache_dir, get_dtype_size
 
 
 if is_safetensors_available():
@@ -225,6 +226,16 @@ def load_model_weights(
         for name in parameter_names:
             _init_parameter(model, name)
 
+    # we should tie embeddings after loading weights because to_empty() leads to untied weights,
+    # except for fsdp1 (custom init) and fsdp2 (swap tensor) contexts.
+    if getattr(model.config, "tie_word_embeddings", True):
+        try:
+            input_embeddings = model.get_input_embeddings()
+            output_embeddings = model.get_output_embeddings()
+            output_embeddings._parameters["weight"] = input_embeddings._parameters["weight"]
+        except Exception as e:
+            logger.info_rank0(f"Failed to tie embeddings: {e}")
+
 
 def _get_shard_info(
     state_dict: Dict[str, "torch.Tensor"],
@@ -270,7 +281,7 @@ def _get_shard_info(
         is_sharded = True
         for shard_idx, shard in enumerate(shard_list):
             prefix, extension = weights_name.rsplit(".", maxsplit=1)
-            file_name = f"{prefix}-{shard_idx + 1:05d}-of-{num_shards:05d}.{extension}"
+            file_name = f"{prefix}-{shard_idx+1:05d}-of-{num_shards:05d}.{extension}"
             for name in shard:
                 weight_map[name] = file_name
 
@@ -363,39 +374,9 @@ def save_model_weights(
 
 
 def save_model_assets(output_dir: Union[str, "os.PathLike"], model_assets: Sequence["ModelAssets"]):
+
     for model_asset in model_assets:
         if hasattr(model_asset, "save_pretrained"):
             model_asset.save_pretrained(output_dir)
         else:
             logger.warning(f"Model asset {model_asset} should implement `save_pretrained`.")
-
-
-class GradientCheckpointingLayer(nn.Module):
-    """Base class for layers with gradient checkpointing.
-
-    This class enables gradient checkpointing functionality for a layer. By default, gradient checkpointing is disabled
-    (`gradient_checkpointing = False`). When `model.set_gradient_checkpointing()` is called, gradient checkpointing is
-    enabled by setting `gradient_checkpointing = True` and assigning a checkpointing function to `_gradient_checkpointing_func`.
-
-    Important:
-
-        When using gradient checkpointing with `use_reentrant=True`, inputs that require gradients (e.g. hidden states)
-        must be passed as positional arguments (`*args`) rather than keyword arguments to properly propagate gradients.
-
-        Example:
-
-            ```python
-            >>> # Correct - hidden_states passed as positional arg
-            >>> out = self.layer(hidden_states, attention_mask=attention_mask)
-
-            >>> # Incorrect - hidden_states passed as keyword arg
-            >>> out = self.layer(hidden_states=hidden_states, attention_mask=attention_mask)
-            ```
-    """
-
-    gradient_checkpointing = False
-
-    def __call__(self, *args, **kwargs):
-        if self.gradient_checkpointing and self.training:
-            return self._gradient_checkpointing_func(partial(super().__call__, **kwargs), *args)
-        return super().__call__(*args, **kwargs)

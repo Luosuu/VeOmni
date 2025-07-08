@@ -41,7 +41,10 @@ class _Logger(logging.Logger):
         self.warning(msg)
 
     def warning_once(self, msg: str) -> None:
-        self.warning(msg)
+        self.warning_once(msg)
+
+    def debug_rank0(self, msg: str) -> None:
+        self.debug(msg)
 
 
 def _get_default_logging_level() -> "logging._Level":
@@ -114,6 +117,14 @@ def info_rank0(self: "logging.Logger", *args, **kwargs) -> None:
 logging.Logger.info_rank0 = info_rank0
 
 
+def debug_rank0(self: "logging.Logger", *args, **kwargs) -> None:
+    if int(os.getenv("LOCAL_RANK", "0")) == 0:
+        self.debug(*args, **kwargs)
+
+
+logging.Logger.debug_rank0 = debug_rank0
+
+
 def warning_rank0(self: "logging.Logger", *args, **kwargs) -> None:
     if int(os.getenv("LOCAL_RANK", "0")) == 0:
         self.warning(*args, **kwargs)
@@ -125,7 +136,7 @@ logging.Logger.warning_rank0 = warning_rank0
 @lru_cache(None)
 def warning_once(self, *args, **kwargs) -> None:
     if int(os.getenv("LOCAL_RANK", "0")) == 0:
-        self.warning(*args, **kwargs)
+        self.warning_rank0(*args, **kwargs)
 
 
 logging.Logger.warning_once = warning_once

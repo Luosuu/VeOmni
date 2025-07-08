@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import types
 from functools import partial
 from typing import Any, Dict, List, Optional
 
@@ -22,11 +23,19 @@ from torch.distributed.fsdp import CPUOffload, FullyShardedDataParallel, MixedPr
 from torch.distributed.fsdp._runtime_utils import _lazy_init
 from torch.distributed.fsdp.wrap import lambda_auto_wrap_policy
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.checkpoint import noop_context_fn
 
-from ..checkpoint import register_checkpoint_extension
+from ..models import load_model_weights
 from ..utils import logging
 from ..utils.import_utils import is_torch_version_greater_than
-from .initialize import init_fsdp_fn, parallel_init_fsdp_fn, parallel_load_safetensors
+from .checkpoint import CheckpointFunction
+from .fsdp import (
+    clip_grad_norm_,
+    init_fsdp_fn,
+    parallel_init_fsdp_fn,
+    parallel_load_safetensors,
+    register_checkpoint_extension,
+)
 from .parallel_state import get_parallel_state
 from .utils import get_module_from_path, set_module_from_path
 
@@ -46,11 +55,11 @@ def verbose_fsdp_grouping(model, prefix="", depth=0):
         if isinstance(child, FullyShardedDataParallel):
             module_names = [m_name for m_name, _ in child.named_modules()][1:]  # [1:] 排除自身
             strategy = child.sharding_strategy
-            logger.info_rank0(f"{indent}├── [FSDP Group] {prefix}{name}")
-            logger.info_rank0(
+            logger.debug_rank0(f"{indent}├── [FSDP Group] {prefix}{name}")
+            logger.debug_rank0(
                 f"{indent}│   ├── Sharding Strategy: {strategy}, Mixed Precision: {child.mixed_precision}"
             )
-            logger.info_rank0(f"{indent}│   └── Contains Modules: {module_names}")
+            logger.debug_rank0(f"{indent}│   └── Contains Modules: {module_names}")
 
             verbose_fsdp_grouping(child, prefix=f"{prefix}{name}.", depth=depth + 1)
         else:
@@ -59,6 +68,7 @@ def verbose_fsdp_grouping(model, prefix="", depth=0):
 
 def build_parallelize_model(
     model: "nn.Module",
+    weights_path: Optional[str] = None,
     sharding_plan: Optional[Dict[str, Any]] = None,
     enable_full_shard: bool = True,
     enable_mixed_precision: bool = True,
@@ -72,19 +82,26 @@ def build_parallelize_model(
     parallel_state = get_parallel_state()
     fsdp_no_shard_states = None
 
-    if not parallel_state.fsdp_enabled or parallel_state.dp_mode != "fsdp1":
+    if not parallel_state.fsdp_enabled:
         if kwargs.get("init_device") != "cuda":
-            raise ValueError("Only FSDP1 training supports `init_device=cpu` or `init_device=meta`.")
+            raise ValueError("Only FSDP training supports `init_device=cpu` or `init_device=meta`.")
         if kwargs.pop("enable_fsdp_offload", False):
-            raise ValueError("Only FSDP1 training supports `enable_fsdp_offload`.")
+            raise ValueError("Only FSDP training supports `enable_fsdp_offload`.")
 
     if enable_mixed_precision:  # upcast to float32 before feed it to optimizer
         model = model.float()
 
     if enable_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
         logger.info_rank0("Enable gradient checkpointing.")
+        use_reentrant = kwargs.pop("enable_reentrant", False)
+        if use_reentrant:
+            torch.utils.checkpoint.CheckpointFunction = CheckpointFunction
+
         model.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={"use_reentrant": kwargs.pop("enable_reentrant", True)}
+            gradient_checkpointing_kwargs={
+                "use_reentrant": use_reentrant,
+                "context_fn": kwargs.pop("recompute_context_fn", noop_context_fn),
+            },
         )
 
     if parallel_state.tp_enabled:
@@ -98,14 +115,12 @@ def build_parallelize_model(
         parallel_plan = model.get_parallel_plan()
         ep_param_suffix = parallel_plan.ep_param_suffix
 
-        fqn2spec_info = parallel_plan.apply(model, parallel_state.ep_mesh)
+        fqn2spec_info = parallel_plan.apply(model, parallel_state.ep_fsdp_device_mesh)
         fsdp_no_shard_states_fqn_to_module = parallel_plan.get_fsdp_no_shard_info(model)
 
         fsdp_no_shard_states = list(fsdp_no_shard_states_fqn_to_module.values())
         fsdp_no_shard_states_fqn = list(fsdp_no_shard_states_fqn_to_module.keys())
-        logger.info_rank0(
-            f"Apply expert parallel to the model successfully.\nEP no shard states in FSDP: {fsdp_no_shard_states_fqn}."
-        )
+        logger.info_rank0(f"Apply expert parallel to the model successfully.\nEP modules: {fsdp_no_shard_states_fqn}.")
     else:
         fqn2spec_info = None
         ep_param_suffix = None
@@ -146,10 +161,26 @@ def build_parallelize_model(
 
             fully_shard(model, **fsdp_kwargs)
 
+            if kwargs.get("init_device") == "meta":
+                if weights_path is None:
+                    # shard init empty model with fsdp2
+                    model.to_empty(device="cuda")
+                    model.init_weights()
+                else:
+                    from torch.distributed.tensor import distribute_tensor
+
+                    load_model_weights(model, weights_path, "cuda", dtensor_factory=distribute_tensor)
+
         elif parallel_state.dp_mode == "fsdp1":
             wrap_policy = partial(
                 lambda_auto_wrap_policy, lambda_fn=lambda module: module.__class__.__name__ in basic_modules
             )
+            # set fsdp/hsdp sharding strategy
+            if parallel_state.fsdp_mesh.ndim > 1 and parallel_state.fsdp_mesh.size() > 1:
+                strategy = ShardingStrategy.HYBRID_SHARD
+            else:
+                strategy = ShardingStrategy.FULL_SHARD
+
             # set fsdp/hsdp sharding strategy
             if parallel_state.fsdp_mesh.ndim > 1 and parallel_state.fsdp_mesh.size() > 1:
                 strategy = ShardingStrategy.HYBRID_SHARD
@@ -163,6 +194,10 @@ def build_parallelize_model(
                 "sharding_strategy": strategy if enable_full_shard else ShardingStrategy.NO_SHARD,
                 "use_orig_params": True,
             }
+
+            fsdp_kwargs["device_mesh"] = parallel_state.fsdp_mesh
+
+            fsdp_kwargs.update(kwargs.pop("fsdp_kwargs", {}))
 
             if enable_mixed_precision:
                 logger.info_rank0("Enable mixed precision training.")
@@ -179,19 +214,25 @@ def build_parallelize_model(
             if kwargs.get("init_device") == "cpu":
                 logger.info_rank0("Enable rank0-only initialization.")
                 fsdp_kwargs["sync_module_states"] = True
-                if get_parallel_state().global_rank != 0:
+                if parallel_state.global_rank != 0:
                     fsdp_kwargs["param_init_fn"] = init_fsdp_fn(model, device="cuda")
             elif kwargs.get("init_device") == "meta":
-                weights_path = kwargs.pop("weights_path", None)
-                assert weights_path is not None, "`weights_path` must be provided when `init_device=meta`."
+                # assert weights_path is not None, "`weights_path` must be provided when `init_device=meta` for fsdp1."
 
                 logger.info_rank0("Enable meta initialization.")
+                if weights_path is None:
+                    logger.info_rank0("weights_path is None during meta initialization.")
+
                 ignore_param_names = (
                     [".".join([fqn, k]) for fqn in fsdp_no_shard_states_fqn for k in ep_param_suffix]
                     if fsdp_no_shard_states_fqn is not None
                     else None
                 )
-                shard_states = parallel_load_safetensors(weights_path, ignore_param_name=ignore_param_names)
+                shard_states = (
+                    parallel_load_safetensors(weights_path, ignore_param_name=ignore_param_names)
+                    if weights_path
+                    else kwargs.get("state_dict", {})
+                )
                 fsdp_kwargs["param_init_fn"] = parallel_init_fsdp_fn(
                     model, shard_states, ignore_param_name=ignore_param_names
                 )
@@ -202,23 +243,40 @@ def build_parallelize_model(
 
             if kwargs.pop("enable_forward_prefetch", False):
                 fsdp_kwargs["forward_prefetch"] = True
+            else:
+                fsdp_kwargs["forward_prefetch"] = False
+                fsdp_kwargs["backward_prefetch"] = None
 
             # FULLY_SHARD first
             model = FullyShardedDataParallel(model, **fsdp_kwargs)
 
             if fsdp_no_shard_states is not None:
                 # apply NO_SHARD the ignored_states, but wrap into DDP
-                logger.info_rank0(f"Apply NO_SHARD states on '{fsdp_no_shard_states_fqn}'.")
+                if parallel_state.ep_fsdp_mesh["ep_fsdp"].size() == 1:
+                    moe_sharding_strategy = ShardingStrategy.NO_SHARD
+                    ep_fsdp_device_mesh = parallel_state.fsdp_mesh
+                else:
+                    moe_sharding_strategy = ShardingStrategy.HYBRID_SHARD
+                    ep_fsdp_device_mesh = parallel_state.ep_fsdp_mesh
+
+                logger.info_rank0(f"Apply {moe_sharding_strategy} states on '{fsdp_no_shard_states_fqn}'.")
                 fsdp_kwargs.pop("ignored_states", None)
                 fsdp_kwargs.pop("auto_wrap_policy", None)
-                fsdp_kwargs["sharding_strategy"] = ShardingStrategy.NO_SHARD
+                fsdp_kwargs["sharding_strategy"] = moe_sharding_strategy
+                fsdp_kwargs["device_mesh"] = ep_fsdp_device_mesh
+                logger.info_rank0(f"{ep_fsdp_device_mesh=}")
                 for fqn in fsdp_no_shard_states_fqn:
                     no_shard_module = get_module_from_path(model, fqn)
                     if kwargs.get("init_device") == "meta":
                         specific_param_name = [".".join([fqn, k]) for k in ep_param_suffix]
-                        shard_states = parallel_load_safetensors(weights_path, specific_param_name=specific_param_name)
-                        for suffix in ep_param_suffix:
-                            shard_states[suffix] = shard_states.pop(".".join([fqn, suffix]))
+                        shard_states = (
+                            parallel_load_safetensors(weights_path, specific_param_name=specific_param_name)
+                            if weights_path
+                            else {}
+                        )
+                        if weights_path:
+                            for suffix in ep_param_suffix:
+                                shard_states[suffix] = shard_states.pop(".".join([fqn, suffix]))
                         fsdp_kwargs["param_init_fn"] = parallel_init_fsdp_fn(
                             no_shard_module, shard_states, specific_param_name=ep_param_suffix
                         )
@@ -227,9 +285,16 @@ def build_parallelize_model(
             _lazy_init(model, model)
 
             # Apply fsdp extension to FSDP model
-            save_hook_mesh = parallel_state.ep_mesh if parallel_state.ep_enabled else None
+            save_hook_mesh = parallel_state.ep_fsdp_device_mesh if parallel_state.ep_enabled else None
             logger.info_rank0("Register Checkpoints Extension hook to the model")
-            register_checkpoint_extension(fsdp_model=model, device_mesh=save_hook_mesh, fqn2spec_info=fqn2spec_info)
+            register_checkpoint_extension(
+                fsdp_model=model,
+                save_hook_mesh=save_hook_mesh,
+                fqn2spec_info=fqn2spec_info,
+            )
+
+            if parallel_state.ep_enabled:
+                model.clip_grad_norm_ = types.MethodType(clip_grad_norm_, model)
 
             verbose_fsdp_grouping(model)
         else:

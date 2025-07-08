@@ -35,7 +35,7 @@ train:
   enable_full_shard: true
   enable_fsdp_offload: false
   enable_activation_offload: false
-  init_device: meta
+  init_device: cpu
   enable_full_determinism: false
   empty_cache_steps: 500
   ckpt_manager: bytecheckpoint

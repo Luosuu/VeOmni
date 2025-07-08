@@ -18,11 +18,7 @@
 from abc import ABC
 
 import torch
-from transformers import (
-    AutoModelForCausalLM,
-    AutoModelForVision2Seq,
-    PreTrainedModel,
-)
+from transformers import AutoModel, AutoModelForCausalLM, AutoModelForVision2Seq, PreTrainedModel
 from transformers.modeling_utils import no_init_weights
 
 from ..utils import logging
@@ -48,10 +44,14 @@ class HuggingfaceLoader(BaseModelLoader):
 
     def load_model(self, init_kwargs: dict, **kwargs):
         model_config = init_kwargs["config"]
+        architecture = _get_model_arch_from_config(model_config)
+
         if type(model_config) in AutoModelForVision2Seq._model_mapping.keys():  # assume built-in models
             load_class = AutoModelForVision2Seq
-        else:
+        elif "ForCausalLM" in architecture and type(model_config) in AutoModelForCausalLM._model_mapping.keys():
             load_class = AutoModelForCausalLM
+        else:
+            load_class = AutoModel
 
         init_device = kwargs.pop("init_device", "cuda")
         weights_path = kwargs.pop("weights_path", None)
@@ -67,26 +67,25 @@ class HuggingfaceLoader(BaseModelLoader):
         if weights_path is None:  # init empty model from config
             if is_torch_npu_available() and init_device == "cuda":
                 init_device = "npu"
-            with torch.device(init_device):
-                model = load_class.from_config(**init_kwargs)
+            if init_device == "meta":
+                with torch.device(init_device), no_init_weights():
+                    logger.info_rank0("Init empty model on meta device from config without init_weights.")
+                    model = load_class.from_config(**init_kwargs)
+            else:
+                with torch.device(init_device):
+                    logger.info_rank0("Init empty model from config.")
+                    model = load_class.from_config(**init_kwargs)
         else:
             if is_vescale_available() and init_device == "meta":
                 from vescale.initialize.meta_init import meta_device_init
 
                 with meta_device_init():
-                    model = self.model_cls._from_config(**init_kwargs)
+                    model = load_class.from_config(**init_kwargs)
             else:
                 with init_empty_weights(), no_init_weights():
                     model = load_class.from_config(**init_kwargs)
             if not empty_init:
                 load_model_weights(model, weights_path, init_device)
-
-        # we should tie embeddings after loading weights because to_empty() leads to untied weights,
-        # except for fsdp1 (custom init) and fsdp2 (swap tensor) contexts.
-        if isinstance(model, PreTrainedModel) and getattr(model.config, "tie_word_embeddings", True):
-            input_embeddings = model.get_input_embeddings()
-            output_embeddings = model.get_output_embeddings()
-            output_embeddings._parameters["weight"] = input_embeddings._parameters["weight"]
 
         return model
 
@@ -113,8 +112,14 @@ class CustomizedModelingLoader(BaseModelLoader):
         if weights_path is None:  # init empty model from config
             if is_torch_npu_available() and init_device == "cuda":
                 init_device = "npu"
-            with torch.device(init_device):
-                model = self.model_cls._from_config(**init_kwargs)
+            if init_device == "meta":
+                with torch.device(init_device), no_init_weights():
+                    logger.info_rank0("Init empty model on meta device from config without init_weights.")
+                    model = self.model_cls._from_config(**init_kwargs)
+            else:
+                with torch.device(init_device):
+                    logger.info_rank0("Init empty model from config.")
+                    model = self.model_cls._from_config(**init_kwargs)
         else:
             if is_vescale_available() and init_device == "meta":
                 from vescale.initialize.meta_init import meta_device_init
@@ -124,15 +129,18 @@ class CustomizedModelingLoader(BaseModelLoader):
             else:
                 with init_empty_weights(), no_init_weights():
                     model = self.model_cls._from_config(**init_kwargs)
+
             if not empty_init:
                 load_model_weights(model, weights_path, init_device)
 
-        # we should tie embeddings after loading weights because to_empty() leads to untied weights,
-        # except for fsdp1 (custom init) and fsdp2 (swap tensor) contexts.
-        if isinstance(model, PreTrainedModel) and getattr(model.config, "tie_word_embeddings", True):
-            input_embeddings = model.get_input_embeddings()
-            output_embeddings = model.get_output_embeddings()
-            output_embeddings._parameters["weight"] = input_embeddings._parameters["weight"]
+            # we should tie embeddings after loading weights because init_empty_weights() leads to untied weights,
+            if getattr(model.config, "tie_word_embeddings", True):
+                try:
+                    input_embeddings = model.get_input_embeddings()
+                    output_embeddings = model.get_output_embeddings()
+                    output_embeddings._parameters["weight"] = input_embeddings._parameters["weight"]
+                except Exception as e:
+                    logger.info_rank0(f"Failed to tie embeddings: {e}")
 
         return model
 
@@ -144,10 +152,10 @@ def _get_model_arch_from_config(model_config):
     return arch_name
 
 
-def get_loader(model_config):
+def get_loader(model_config, force_use_huggingface):
     model_arch = _get_model_arch_from_config(model_config)
     model_registry = get_registry()
-    if model_arch in model_registry.supported_models:
+    if model_arch in model_registry.supported_models and not force_use_huggingface:
         model_cls = model_registry.get_model_cls_from_model_arch(model_arch)
         loader = CustomizedModelingLoader(model_cls=model_cls)
     else:
