@@ -225,6 +225,16 @@ def load_model_weights(
         for name in parameter_names:
             _init_parameter(model, name)
 
+    # we should tie embeddings after loading weights because to_empty() leads to untied weights,
+    # except for fsdp1 (custom init) and fsdp2 (swap tensor) contexts.
+    if getattr(model.config, "tie_word_embeddings", True):
+        try:
+            input_embeddings = model.get_input_embeddings()
+            output_embeddings = model.get_output_embeddings()
+            output_embeddings._parameters["weight"] = input_embeddings._parameters["weight"]
+        except Exception as e:
+            logger.info_rank0(f"Failed to tie embeddings: {e}")
+
 
 def _get_shard_info(
     state_dict: Dict[str, "torch.Tensor"],

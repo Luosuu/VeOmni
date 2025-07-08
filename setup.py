@@ -54,7 +54,7 @@ BASE_REQUIRE = [
     "diffusers>=0.30.0,<=0.31.0",
     "packaging>=23.0,<26.0",
     "torchdata>=0.8.0,<1.0",
-    "transformers[torch]>=4.46.2,<=4.49.0",
+    "transformers[torch]>=4.46.2,<4.52.0",
     "tiktoken>=0.9.0",
     "blobfile>=3.0.0",
 ]

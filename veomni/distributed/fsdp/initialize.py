@@ -25,8 +25,8 @@ import torch.nn as nn
 from safetensors.torch import load_file
 from torch.distributed._tensor import Replicate, Shard
 
-from ..utils import logging
-from .parallel_plan import SpecInfo
+from ...utils import logging
+from ..parallel_plan import SpecInfo
 
 
 logger = logging.get_logger(__name__)
@@ -36,6 +36,8 @@ def parallel_load_safetensors(
     filepath: str, specific_param_name: list[str] = None, ignore_param_name: list[str] = None
 ):
     assert not (specific_param_name is not None and ignore_param_name is not None)
+
+    dist.barrier()
 
     safetensors2param = {}
     index_file = os.path.join(filepath, "model.safetensors.index.json")
@@ -135,7 +137,7 @@ def parallel_init_fsdp_fn(
         else:
             assert isinstance(spec_info.placement, Shard)
             size = list(param.shape)
-            size[spec_info.placement.dim] *= spec_info.mesh.size()
+            size[spec_info.placement.dim] *= spec_info.ep_mesh.size()
             return torch.empty(size, dtype=param.dtype, device=device)
 
     def copy_to_local(param: torch.Tensor, full_data: torch.Tensor, spec_info: SpecInfo):
@@ -151,8 +153,8 @@ def parallel_init_fsdp_fn(
             param.data.copy_(full_data)
         else:
             assert isinstance(spec_info.placement, Shard)
-            local_data = full_data.chunk(spec_info.mesh.size(), dim=spec_info.placement.dim)[
-                spec_info.mesh.get_local_rank()
+            local_data = full_data.chunk(spec_info.ep_mesh.size(), dim=spec_info.placement.dim)[
+                spec_info.ep_mesh.get_local_rank()
             ]
             param.data.copy_(local_data.contiguous())
         param.spec_info = spec_info
@@ -184,7 +186,7 @@ def parallel_init_fsdp_fn(
                 if hasattr(state, "spec_info"):
                     shard = state.spec_info.placement
                     if isinstance(shard, Shard):
-                        size[shard.dim] *= state.spec_info.mesh.size()
+                        size[shard.dim] *= state.spec_info.ep_mesh.size()
                 shard_states[param_name] = torch.nn.Parameter(
                     torch.randn(size, dtype=state.dtype, device=device, requires_grad=state.requires_grad)
                     * initializer_range
@@ -193,6 +195,7 @@ def parallel_init_fsdp_fn(
                 shard_states[param_name] = 0
         loaded = shard_states[param_name]
         if isinstance(loaded, (torch.nn.Parameter, torch.Tensor)):
+            loaded = loaded.to(dtype=param.dtype, device=device)
             dist.broadcast(loaded.data.to(param.dtype), src=dist.get_rank())
             if hasattr(state, "spec_info"):
                 copy_to_local(param, loaded.data, state.spec_info)
@@ -225,7 +228,7 @@ def parallel_init_fsdp_fn(
         )
         for name, state in param_and_buffers:
             if state not in state2fqn:
-                logger.warning_rank0(f"{name} in {sub_mod.__class__.__name__} not found in state2fqn, skip it")
+                logger.warning_once(f"{name} in {sub_mod.__class__.__name__} not found in state2fqn, skip it")
                 continue
             is_param = name in sub_mod._parameters
             fqn = state2fqn[state].pop(0)

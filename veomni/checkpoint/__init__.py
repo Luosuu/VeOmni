@@ -14,7 +14,6 @@
 
 
 from .checkpointer import build_checkpointer
-from .extension import register_checkpoint_extension
 from .format_utils import bytecheckpoint_ckpt_to_state_dict, ckpt_to_state_dict, dcp_to_torch_state_dict
 
 
@@ -23,5 +22,4 @@ __all__ = [
     "dcp_to_torch_state_dict",
     "bytecheckpoint_ckpt_to_state_dict",
     "build_checkpointer",
-    "register_checkpoint_extension",
 ]
