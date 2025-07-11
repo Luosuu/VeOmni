@@ -21,6 +21,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Literal, Optional, Sequence, Tuple, Union
 
 import torch
+from diffusers.utils import SAFE_WEIGHTS_INDEX_NAME as DIFFUSERS_SAFE_WEIGHTS_INDEX_NAME
+from diffusers.utils import SAFETENSORS_WEIGHTS_NAME as DIFFUSERS_SAFETENSORS_WEIGHTS_NAME
+from diffusers.utils import WEIGHTS_INDEX_NAME as DIFFUSERS_WEIGHTS_INDEX_NAME
+from diffusers.utils import WEIGHTS_NAME as DIFFUSERS_WEIGHTS_NAME
 from torch import distributed as dist
 from torch import nn
 from tqdm import tqdm
@@ -96,6 +100,15 @@ def _load_state_dict(weights_path: str, **kwargs) -> List["StateDictIterator"]:
         return [StateDictIterator(resolved_weight_file)]
 
     resolved_weight_file = cached_file(weights_path, SAFE_WEIGHTS_INDEX_NAME, **cache_kwargs)
+    if resolved_weight_file:
+        shard_files, _ = get_checkpoint_shard_files(weights_path, resolved_weight_file, **kwargs)
+        return [StateDictIterator(shard_file) for shard_file in shard_files]
+
+    resolved_weight_file = cached_file(weights_path, DIFFUSERS_SAFETENSORS_WEIGHTS_NAME, **cache_kwargs)
+    if resolved_weight_file:
+        return [StateDictIterator(resolved_weight_file)]
+
+    resolved_weight_file = cached_file(weights_path, DIFFUSERS_SAFE_WEIGHTS_INDEX_NAME, **cache_kwargs)
     if resolved_weight_file:
         shard_files, _ = get_checkpoint_shard_files(weights_path, resolved_weight_file, **kwargs)
         return [StateDictIterator(shard_file) for shard_file in shard_files]
@@ -212,7 +225,8 @@ def load_model_weights(
                 parameter_names.remove(name)
                 _dispatch_parameter(model, name, tensor, dtensor_factory)
             else:
-                logger.info_rank0(f"Unexpected key in state dict: {name}.")
+                # logger.info_rank0(f"Unexpected key in state dict: {name}.")
+                pass
 
         del state_dict_iterator
         empty_cache()
@@ -241,6 +255,7 @@ def _get_shard_info(
     save_dtype: Optional[Union[str, "torch.dtype"]],
     shard_size: int,
     safe_serialization: bool,
+    model_type: Optional[str] = None,
 ) -> Tuple[bool, int, Dict[str, str]]:
     """
     Gets the shard information, should be executed at rank 0.
@@ -268,7 +283,10 @@ def _get_shard_info(
         total_size += current_size
         shard_list.append(current_shard)
 
-    weights_name = SAFE_WEIGHTS_NAME if safe_serialization else WEIGHTS_NAME
+    if model_type == "dit":
+        weights_name = DIFFUSERS_SAFETENSORS_WEIGHTS_NAME if safe_serialization else DIFFUSERS_WEIGHTS_NAME
+    else:
+        weights_name = SAFE_WEIGHTS_NAME if safe_serialization else WEIGHTS_NAME
     num_shards = len(shard_list)
     weight_map = OrderedDict()
     is_sharded = None
@@ -310,6 +328,7 @@ def save_model_weights(
     shard_size: int = 5_000_000_000,
     safe_serialization: bool = True,
     model_assets: Optional[Sequence["ModelAssets"]] = None,
+    model_type: Optional[str] = None,
 ) -> None:
     """
     Saves full model weights. The model parameters should be either tensor or dtensor.
@@ -318,7 +337,9 @@ def save_model_weights(
     """
 
     os.makedirs(output_dir, exist_ok=True)
-    is_sharded, total_size, weight_map = _get_shard_info(state_dict, save_dtype, shard_size, safe_serialization)
+    is_sharded, total_size, weight_map = _get_shard_info(
+        state_dict, save_dtype, shard_size, safe_serialization, model_type
+    )
     full_state_dict = OrderedDict()
     prev_file_name = None
     for name, tensor in state_dict.items():
@@ -355,7 +376,10 @@ def save_model_weights(
                 "metadata": {"total_size": total_size},
                 "weight_map": weight_map,
             }
-            index_file = SAFE_WEIGHTS_INDEX_NAME if safe_serialization else WEIGHTS_INDEX_NAME
+            if model_type == "dit":
+                index_file = DIFFUSERS_SAFE_WEIGHTS_INDEX_NAME if safe_serialization else DIFFUSERS_WEIGHTS_INDEX_NAME
+            else:
+                index_file = SAFE_WEIGHTS_INDEX_NAME if safe_serialization else WEIGHTS_INDEX_NAME
             with open(os.path.join(output_dir, index_file), "w", encoding="utf-8") as f:
                 content = json.dumps(index, indent=2, sort_keys=True) + "\n"
                 f.write(content)
