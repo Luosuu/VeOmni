@@ -23,8 +23,6 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Literal,
 import torch
 from diffusers.utils import SAFE_WEIGHTS_INDEX_NAME as DIFFUSERS_SAFE_WEIGHTS_INDEX_NAME
 from diffusers.utils import SAFETENSORS_WEIGHTS_NAME as DIFFUSERS_SAFETENSORS_WEIGHTS_NAME
-from diffusers.utils import WEIGHTS_INDEX_NAME as DIFFUSERS_WEIGHTS_INDEX_NAME
-from diffusers.utils import WEIGHTS_NAME as DIFFUSERS_WEIGHTS_NAME
 from torch import distributed as dist
 from torch import nn
 from tqdm import tqdm
@@ -283,10 +281,7 @@ def _get_shard_info(
         total_size += current_size
         shard_list.append(current_shard)
 
-    if model_type == "dit":
-        weights_name = DIFFUSERS_SAFETENSORS_WEIGHTS_NAME if safe_serialization else DIFFUSERS_WEIGHTS_NAME
-    else:
-        weights_name = SAFE_WEIGHTS_NAME if safe_serialization else WEIGHTS_NAME
+    weights_name = SAFE_WEIGHTS_NAME if safe_serialization else WEIGHTS_NAME
     num_shards = len(shard_list)
     weight_map = OrderedDict()
     is_sharded = None
@@ -376,10 +371,8 @@ def save_model_weights(
                 "metadata": {"total_size": total_size},
                 "weight_map": weight_map,
             }
-            if model_type == "dit":
-                index_file = DIFFUSERS_SAFE_WEIGHTS_INDEX_NAME if safe_serialization else DIFFUSERS_WEIGHTS_INDEX_NAME
-            else:
-                index_file = SAFE_WEIGHTS_INDEX_NAME if safe_serialization else WEIGHTS_INDEX_NAME
+
+            index_file = SAFE_WEIGHTS_INDEX_NAME if safe_serialization else WEIGHTS_INDEX_NAME
             with open(os.path.join(output_dir, index_file), "w", encoding="utf-8") as f:
                 content = json.dumps(index, indent=2, sort_keys=True) + "\n"
                 f.write(content)

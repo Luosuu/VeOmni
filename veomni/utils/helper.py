@@ -77,30 +77,6 @@ def _compute_seqlens(
     return seqlens
 
 
-def _compute_wan_seqlens(
-    micro_batch: Dict[str, "torch.Tensor"], rmpad: bool, rmpad_with_pos_ids: bool
-) -> Tuple[List[int], Optional[List[int]]]:
-    """
-    Computes the sequence lengths of the current batch.
-
-    Args:
-        micro_batch (Dict[str, Tensor]): The current batch.
-        rmpad (bool): Whether to remove the padding tokens.
-        rmpad_with_pos_ids (bool): Whether to remove the padding tokens using the position ids.
-    """
-    latent_shape = micro_batch["latents"].shape
-    if len(latent_shape) == 5:
-        B = latent_shape[0]
-    else:
-        B = 1
-    C, T, H, W = latent_shape[-4:]
-    T_out = int((T - 1) / 1 + 1)
-    H_out = int((H - 2) / 2 + 1)
-    W_out = int((W - 2) / 2 + 1)
-    seqlens = B * T_out * H_out * W_out
-    return [seqlens]
-
-
 class EnvironMeter:
     """
     Computes the metrics about the training efficiency.
@@ -141,12 +117,8 @@ class EnvironMeter:
     def load_state_dict(self, state_dict: Dict[str, Any]):
         self.consume_tokens = state_dict["consume_tokens"]
 
-    def add(self, micro_batch: Dict[str, "torch.Tensor"], model_type: Optional[str] = None) -> None:
-        if model_type == "wan":
-            seqlens = _compute_wan_seqlens(micro_batch, self.rmpad, self.rmpad_with_pos_ids)
-        else:
-            seqlens = _compute_seqlens(micro_batch, self.rmpad, self.rmpad_with_pos_ids)
-
+    def add(self, micro_batch: Dict[str, "torch.Tensor"]) -> None:
+        seqlens = _compute_seqlens(micro_batch, self.rmpad, self.rmpad_with_pos_ids)
         if "image_grid_thw" in micro_batch:
             image_grid_thw = micro_batch["image_grid_thw"]
             image_seqlens = torch.repeat_interleave(image_grid_thw[:, 1] * image_grid_thw[:, 2], image_grid_thw[:, 0])

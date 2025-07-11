@@ -18,7 +18,6 @@ from veomni.distributed.torch_parallelize import build_parallelize_model
 from veomni.models import (
     build_foundation_model,
     save_model_assets,
-    save_model_weights,
 )
 from veomni.optim import build_lr_scheduler, build_optimizer
 from veomni.schedulers.flow_match import FlowMatchScheduler
@@ -31,6 +30,7 @@ from veomni.utils.arguments import (
     save_args,
 )
 from veomni.utils.dist_utils import all_reduce
+from veomni.utils.dit_utils import EnvironMeter, save_model_weights
 from veomni.utils.lora_utils import add_lora_to_model, freeze_parameters
 from veomni.utils.recompute_utils import convert_ops_to_objects
 
@@ -244,11 +244,9 @@ def main():
 
     start_epoch, start_step, global_step = 0, 0, 0
     save_checkpoint_path = None
-    environ_meter = helper.EnvironMeter(
+    environ_meter = EnvironMeter(
         config=model_config,
         global_batch_size=args.train.global_batch_size,
-        rmpad=args.train.rmpad,
-        rmpad_with_pos_ids=args.train.rmpad_with_pos_ids,
         empty_cache_steps=args.train.empty_cache_steps,
     )
 
@@ -464,7 +462,6 @@ def save_hf_weights(args, save_checkpoint_path, model_assets):
         hf_weights_path,
         model_state_dict,
         model_assets=model_assets,
-        model_type="dit",
     )
     logger.info_rank0(f"Huggingface checkpoint saved at {hf_weights_path} successfully!")
 
