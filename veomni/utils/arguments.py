@@ -300,10 +300,6 @@ class TrainingArguments:
         default=False,
         metadata={"help": "Enable activation offload to CPU."},
     )
-    ops_to_save: List[str] = field(
-        default_factory=list,
-        metadata={"help": "Ops to save."},
-    )
     activation_gpu_limit: float = field(
         default=0.0,
         metadata={

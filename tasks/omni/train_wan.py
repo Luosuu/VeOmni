@@ -44,6 +44,10 @@ class MyDataArguments(DataArguments):
         default=1,
         metadata={"help": "The number of times to repeat the datasets."},
     )
+    ops_to_save: List[str] = field(
+        default_factory=list,
+        metadata={"help": "Ops to save."},
+    )
 
 
 @dataclass
