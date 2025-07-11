@@ -223,8 +223,7 @@ def load_model_weights(
                 parameter_names.remove(name)
                 _dispatch_parameter(model, name, tensor, dtensor_factory)
             else:
-                # logger.info_rank0(f"Unexpected key in state dict: {name}.")
-                pass
+                logger.info_rank0(f"Unexpected key in state dict: {name}.")
 
         del state_dict_iterator
         empty_cache()
@@ -253,7 +252,6 @@ def _get_shard_info(
     save_dtype: Optional[Union[str, "torch.dtype"]],
     shard_size: int,
     safe_serialization: bool,
-    model_type: Optional[str] = None,
 ) -> Tuple[bool, int, Dict[str, str]]:
     """
     Gets the shard information, should be executed at rank 0.
@@ -323,7 +321,6 @@ def save_model_weights(
     shard_size: int = 5_000_000_000,
     safe_serialization: bool = True,
     model_assets: Optional[Sequence["ModelAssets"]] = None,
-    model_type: Optional[str] = None,
 ) -> None:
     """
     Saves full model weights. The model parameters should be either tensor or dtensor.
@@ -332,9 +329,7 @@ def save_model_weights(
     """
 
     os.makedirs(output_dir, exist_ok=True)
-    is_sharded, total_size, weight_map = _get_shard_info(
-        state_dict, save_dtype, shard_size, safe_serialization, model_type
-    )
+    is_sharded, total_size, weight_map = _get_shard_info(state_dict, save_dtype, shard_size, safe_serialization)
     full_state_dict = OrderedDict()
     prev_file_name = None
     for name, tensor in state_dict.items():
