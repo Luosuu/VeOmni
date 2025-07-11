@@ -44,10 +44,6 @@ class MyDataArguments(DataArguments):
         default=1,
         metadata={"help": "The number of times to repeat the datasets."},
     )
-    ops_to_save: List[str] = field(
-        default_factory=list,
-        metadata={"help": "Ops to save."},
-    )
 
 
 @dataclass
@@ -55,6 +51,10 @@ class MyTrainingArguments(TrainingArguments):
     save_initial_model: bool = field(
         default=False,
         metadata={"help": "Whether or not to save the initial model."},
+    )
+    ops_to_save: List[str] = field(
+        default_factory=list,
+        metadata={"help": "Ops to save."},
     )
 
 
