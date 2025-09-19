@@ -7,6 +7,7 @@ data:
   train_path: Wanmini480
   train_size: 1000000000000
   dataloader_type: native
+  datasets_type: iterable
   data_type: diffusion
   max_seq_len: 8192
   text_keys: text

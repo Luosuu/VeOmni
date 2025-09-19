@@ -19,6 +19,7 @@ import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer, PreTrainedModel
 from transformers.modeling_utils import no_init_weights
 
+from ...distributed.parallel_state import get_parallel_state
 from ..auto import build_foundation_model, build_processor
 from ..module_utils import init_empty_weights, load_model_weights
 from .configuration_seed_omni import SeedOmniConfig
@@ -38,7 +39,6 @@ def build_omni_processor(
     input_encoder: str = "encoder",
     output_encoder: str = "decoder",
     encode_target: bool = False,
-    max_pixels: int = 28 * 28 * 768,
 ) -> "ProcessorMixin":
     """
     Builds omni modality processor using foundation tokenizer, encoders and decoders.
@@ -53,15 +53,11 @@ def build_omni_processor(
     output_encoders = decoders if output_encoder == "decoder" else encoders
 
     for encoder_type, encoder_args in input_encoders.items():
-        processor = AutoProcessor.from_pretrained(
-            encoder_args["config_path"], max_pixels=max_pixels, trust_remote_code=True
-        )
+        processor = AutoProcessor.from_pretrained(encoder_args["config_path"], trust_remote_code=True)
         processor_dict[f"input_{encoder_type}_processor"] = processor
 
     for encoder_type, encoder_args in output_encoders.items():
-        processor = AutoProcessor.from_pretrained(
-            encoder_args["config_path"], max_pixels=max_pixels, trust_remote_code=True
-        )
+        processor = AutoProcessor.from_pretrained(encoder_args["config_path"], trust_remote_code=True)
         processor_dict[f"output_{encoder_type}_processor"] = processor
 
     if encode_target:
@@ -76,13 +72,13 @@ def build_omni_processor(
 def build_omni_model(
     config_path: str,
     weights_path: Optional[str] = None,
+    foundation: Dict[str, str] = {},
     encoders: Dict[str, Dict[str, str]] = {},
     decoders: Dict[str, Dict[str, str]] = {},
     input_encoder: str = "encoder",
     output_encoder: str = "decoder",
     torch_dtype: Literal["float16", "bfloat16", "float32"] = "bfloat16",
     attn_implementation: Optional[Literal["eager", "sdpa", "flash_attention_2"]] = "flash_attention_2",
-    empty_init: bool = False,
     init_device: Literal["cpu", "cuda"] = "cuda",
     config_kwargs: Optional[Dict[str, Any]] = None,
     force_use_huggingface: bool = False,
@@ -94,7 +90,7 @@ def build_omni_model(
         config_kwargs = {}
 
     foundation_config: "PretrainedConfig" = AutoConfig.from_pretrained(
-        config_path, trust_remote_code=True, **config_kwargs
+        config_path, trust_remote_code=True, **config_kwargs, **foundation
     )
     if isinstance(foundation_config, SeedOmniConfig):
         return build_foundation_model(
@@ -102,7 +98,6 @@ def build_omni_model(
             weights_path=weights_path,
             torch_dtype=torch_dtype,
             attn_implementation=attn_implementation,
-            empty_init=empty_init,
             init_device=init_device,
             config_kwargs=config_kwargs,
             force_use_huggingface=force_use_huggingface,
@@ -155,20 +150,29 @@ def build_omni_model(
         with init_empty_weights(), no_init_weights():
             model = SeedOmniModel._from_config(**init_kwargs)
 
+    if (init_device == "cpu" and get_parallel_state().global_rank != 0) or init_device == "meta":
+        empty_init = True
+    else:
+        empty_init = False
+
     if weights_path is not None and not empty_init:
         load_model_weights(model.foundation, weights_path, init_device)
 
-    for encoder_type, encoder_args in encoders.items():
-        if encoder_args.get("model_path"):
-            load_model_weights(
-                getattr(model.encoder, f"{encoder_type}_encoder"), encoder_args["model_path"], init_device
-            )
+        for encoder_type, encoder_args in encoders.items():
+            if encoder_args.get("model_path"):
+                load_model_weights(
+                    getattr(model.encoder, f"{encoder_type}_encoder"),
+                    encoder_args["model_path"],
+                    init_device,
+                )
 
-    for decoder_type, decoder_args in decoders.items():
-        if decoder_args.get("model_path"):
-            load_model_weights(
-                getattr(model.decoder, f"{decoder_type}_decoder"), decoder_args["model_path"], init_device
-            )
+        for decoder_type, decoder_args in decoders.items():
+            if decoder_args.get("model_path"):
+                load_model_weights(
+                    getattr(model.decoder, f"{decoder_type}_decoder"),
+                    decoder_args["model_path"],
+                    init_device,
+                )
 
     # tie embeddings
     model.get_input_embeddings()._parameters["weight"] = model.foundation.get_input_embeddings()._parameters["weight"]

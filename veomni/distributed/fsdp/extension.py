@@ -54,7 +54,8 @@ def _shard_tensor(orgin_tensor: torch.Tensor, device_mesh: DeviceMesh, shard: Sh
     ep_mesh = device_mesh["ep"]
 
     if orgin_tensor.__class__.__name__ == "DTensor":
-        dtensor = DTensor.from_local(orgin_tensor._local_tensor, device_mesh=device_mesh, placements=[shard, shard])
+        placements = (shard,) + orgin_tensor.placements
+        dtensor = DTensor.from_local(orgin_tensor._local_tensor, device_mesh=device_mesh, placements=placements)
     elif orgin_tensor.__class__.__name__ == "Tensor":
         dtensor = DTensor.from_local(orgin_tensor, device_mesh=ep_mesh, placements=[shard])
 

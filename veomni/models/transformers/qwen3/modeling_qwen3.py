@@ -7,6 +7,7 @@ from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache, St
 from transformers.generation import GenerationMixin
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
+from transformers.modeling_layer import GradientCheckpointingLayer
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
@@ -27,7 +28,7 @@ from ....distributed.parallel_state import get_parallel_state
 from ....distributed.sequence_parallel import slice_position_embedding
 from ....ops.loss import causallm_loss_function
 from ....utils import logging
-from ...modeling_layers import GradientCheckpointingLayer
+from ....utils.import_utils import is_liger_kernel_available, is_torch_npu_available
 
 
 if is_torch_flex_attn_available():
@@ -35,10 +36,25 @@ if is_torch_flex_attn_available():
     from transformers.integrations.flex_attention import make_flex_block_causal_mask
 
 
+if is_liger_kernel_available():
+    from liger_kernel.transformers.rms_norm import LigerRMSNorm
+    from liger_kernel.transformers.rope import liger_rotary_pos_emb
+    from liger_kernel.transformers.swiglu import LigerSwiGLUMLP
+
+
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "Qwen/Qwen3-8B"
 _CONFIG_FOR_DOC = "Qwen3Config"
+
+
+def rms_norm(hidden_states, weight, variance_epsilon):
+    input_dtype = hidden_states.dtype
+    hidden_states = hidden_states.to(torch.float32)
+    variance = hidden_states.pow(2).mean(-1, keepdim=True)
+    hidden_states = hidden_states * torch.rsqrt(variance + variance_epsilon)
+
+    return weight * hidden_states.to(input_dtype)
 
 
 class Qwen3RMSNorm(nn.Module):
@@ -51,11 +67,7 @@ class Qwen3RMSNorm(nn.Module):
         self.variance_epsilon = eps
 
     def forward(self, hidden_states):
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
-        variance = hidden_states.pow(2).mean(-1, keepdim=True)
-        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * hidden_states.to(input_dtype)
+        return rms_norm(hidden_states, self.weight, self.variance_epsilon)
 
     def extra_repr(self):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
@@ -737,6 +749,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
         return causal_mask
 
 
+class KwargsForCausalLM(FlashAttentionKwargs): ...
+
+
 class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
@@ -786,7 +801,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         output_hidden_states: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
-        **kwargs,
+        **kwargs: Unpack[KwargsForCausalLM],
     ) -> CausalLMOutputWithPast:
         r"""
             labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -855,6 +870,23 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             attentions=outputs.attentions,
         )
 
+
+if is_liger_kernel_available():
+    apply_rotary_pos_emb = liger_rotary_pos_emb
+    Qwen3RMSNorm = LigerRMSNorm
+    Qwen3MLP = LigerSwiGLUMLP
+    logger.info_rank0("Apply liger kernel to Qwen3.")
+
+if is_torch_npu_available():
+    from veomni_kernels.rms_norm.npu_ttx_rmsnorm_kernel import triton_rmsnorm_npu
+    from veomni_kernels.rope.npu_ttx_rope_kernel import triton_rope_npu
+
+    from veomni.ops.attention import npu_flash_attention
+
+    apply_rotary_pos_emb = triton_rope_npu
+    rms_norm = triton_rmsnorm_npu
+    ALL_ATTENTION_FUNCTIONS.register("flash_attention_2", npu_flash_attention)
+    logger.info_rank0("Apply npu kernels to Qwen3.")
 
 ModelClass = Qwen3ForCausalLM
 

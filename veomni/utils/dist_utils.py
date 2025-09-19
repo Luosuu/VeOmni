@@ -36,16 +36,24 @@ def all_gather(tensor: "torch.Tensor", world_size: int) -> "torch.Tensor":
 
 def all_reduce(
     data: Union[int, float, List[Union[int, float]], "torch.Tensor"],
-    op: Literal["mean", "sum", "max"] = "mean",
+    op: Literal["mean", "sum", "max", "min"] = "mean",
     group: Optional["ProcessGroup"] = None,
 ) -> Union[int, float, List[Union[int, float]]]:
     """
     Performs all reduce in the given process group.
     """
+    if not dist.is_initialized():
+        raise RuntimeError("Distributed environment is not initialized.")
+
     if not isinstance(data, torch.Tensor):
         data = torch.tensor(data, dtype=torch.float, device="cuda")
 
-    reduce_ops = {"mean": dist.ReduceOp.SUM, "sum": dist.ReduceOp.SUM, "max": dist.ReduceOp.MAX}
+    reduce_ops = {
+        "mean": dist.ReduceOp.SUM,
+        "sum": dist.ReduceOp.SUM,
+        "max": dist.ReduceOp.MAX,
+        "min": dist.ReduceOp.MIN,
+    }
     dist.all_reduce(data, op=reduce_ops[op], group=group)
     if op == "mean":  # ReduceOp.AVG is not supported by the NPU backend
         data /= dist.get_world_size(group=group)

@@ -18,13 +18,19 @@
 from abc import ABC
 
 import torch
-from transformers import AutoModel, AutoModelForCausalLM, AutoModelForVision2Seq, PreTrainedModel
+from transformers import (
+    AutoModel,
+    AutoModelForCausalLM,
+    AutoModelForImageTextToText,
+    AutoModelForVision2Seq,
+    PreTrainedModel,
+)
 from transformers.modeling_utils import no_init_weights
 
 from ..utils import logging
-from ..utils.import_utils import is_torch_npu_available, is_vescale_available
+from ..utils.import_utils import is_torch_npu_available
 from .module_utils import init_empty_weights, load_model_weights
-from .registry import get_registry
+from .registry import ModelRegistry
 
 
 logger = logging.get_logger(__name__)
@@ -46,7 +52,9 @@ class HuggingfaceLoader(BaseModelLoader):
         model_config = init_kwargs["config"]
         architecture = _get_model_arch_from_config(model_config)
 
-        if type(model_config) in AutoModelForVision2Seq._model_mapping.keys():  # assume built-in models
+        if type(model_config) in AutoModelForImageTextToText._model_mapping.keys():  # assume built-in models
+            load_class = AutoModelForImageTextToText
+        elif type(model_config) in AutoModelForVision2Seq._model_mapping.keys():  # assume built-in models
             load_class = AutoModelForVision2Seq
         elif "ForCausalLM" in architecture and type(model_config) in AutoModelForCausalLM._model_mapping.keys():
             load_class = AutoModelForCausalLM
@@ -68,7 +76,7 @@ class HuggingfaceLoader(BaseModelLoader):
             if is_torch_npu_available() and init_device == "cuda":
                 init_device = "npu"
             if init_device == "meta":
-                with torch.device(init_device), no_init_weights():
+                with init_empty_weights():
                     logger.info_rank0("Init empty model on meta device from config without init_weights.")
                     model = load_class.from_config(**init_kwargs)
             else:
@@ -76,14 +84,8 @@ class HuggingfaceLoader(BaseModelLoader):
                     logger.info_rank0("Init empty model from config.")
                     model = load_class.from_config(**init_kwargs)
         else:
-            if is_vescale_available() and init_device == "meta":
-                from vescale.initialize.meta_init import meta_device_init
-
-                with meta_device_init():
-                    model = load_class.from_config(**init_kwargs)
-            else:
-                with init_empty_weights(), no_init_weights():
-                    model = load_class.from_config(**init_kwargs)
+            with init_empty_weights():
+                model = load_class.from_config(**init_kwargs)
             if not empty_init:
                 load_model_weights(model, weights_path, init_device)
 
@@ -113,7 +115,7 @@ class CustomizedModelingLoader(BaseModelLoader):
             if is_torch_npu_available() and init_device == "cuda":
                 init_device = "npu"
             if init_device == "meta":
-                with torch.device(init_device), no_init_weights():
+                with init_empty_weights():
                     logger.info_rank0("Init empty model on meta device from config without init_weights.")
                     model = self.model_cls._from_config(**init_kwargs)
             else:
@@ -121,14 +123,8 @@ class CustomizedModelingLoader(BaseModelLoader):
                     logger.info_rank0("Init empty model from config.")
                     model = self.model_cls._from_config(**init_kwargs)
         else:
-            if is_vescale_available() and init_device == "meta":
-                from vescale.initialize.meta_init import meta_device_init
-
-                with meta_device_init():
-                    model = self.model_cls._from_config(**init_kwargs)
-            else:
-                with init_empty_weights(), no_init_weights():
-                    model = self.model_cls._from_config(**init_kwargs)
+            with init_empty_weights(), no_init_weights():
+                model = self.model_cls._from_config(**init_kwargs)
 
             if not empty_init:
                 load_model_weights(model, weights_path, init_device)
@@ -155,10 +151,12 @@ def _get_model_arch_from_config(model_config):
 def get_loader(model_config, force_use_huggingface):
     model_arch = _get_model_arch_from_config(model_config)
     loader = HuggingfaceLoader()
+    logger.info_rank0(
+        f"Loading model from customized modeling: {model_arch} ModelRegistry.supported_models {ModelRegistry.supported_models}"
+    )
     if not force_use_huggingface:
-        model_registry = get_registry()
-        if model_arch in model_registry.supported_models:
-            model_cls = model_registry.get_model_cls_from_model_arch(model_arch)
+        if model_arch in ModelRegistry.supported_models:
+            model_cls = ModelRegistry.get_model_cls_from_model_arch(model_arch)
             loader = CustomizedModelingLoader(model_cls=model_cls)
 
     return loader

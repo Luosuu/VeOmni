@@ -183,6 +183,7 @@ class Qwen3MoeExperts(nn.Module):
 
     def forward(self, hidden_states, expert_idx=None, routing_weights=None, selected_experts=None):
         if expert_idx is not None:
+            assert not get_parallel_state().ep_enabled, "_moe_implementation=`eager` does not support EP"
             gate_proj_out = torch.matmul(hidden_states, self.gate_proj[expert_idx].transpose(0, 1))
             up_proj_out = torch.matmul(hidden_states, self.up_proj[expert_idx].transpose(0, 1))
 
@@ -1034,6 +1035,9 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         return causal_mask
 
 
+class KwargsForCausalLM(FlashAttentionKwargs): ...
+
+
 def load_balancing_loss_func(
     gate_logits: Union[torch.Tensor, Tuple[torch.Tensor], None],
     num_experts: Optional[int] = None,
@@ -1170,7 +1174,7 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
-        **kwargs,
+        **kwargs: Unpack[KwargsForCausalLM],
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:

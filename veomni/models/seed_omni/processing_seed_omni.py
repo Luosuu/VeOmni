@@ -15,7 +15,12 @@
 
 import os
 
-from transformers import BatchFeature, ProcessorMixin
+
+try:
+    from hdfs_io import exists  # for internal use only
+except ImportError:
+    from ...utils.hdfs_io import exists
+from transformers import AutoProcessor, BatchFeature, ProcessorMixin
 
 from ...utils import logging
 
@@ -87,7 +92,22 @@ class SeedOmniProcessor(ProcessorMixin):
                 for key, value in image_inputs.items():
                     inputs[f"image_target_{key}"] = value
 
-        if input_videos or output_videos or input_audios or output_audios:
+        if input_videos:
+            if getattr(self, "input_video_processor", None) is not None:
+                video_inputs: BatchFeature = self.input_video_processor.process(videos=input_videos, **kwargs)
+            else:
+                logger.warning_once("The input_video_processor is not set, use input_image_processor.")
+                video_inputs: BatchFeature = self.input_image_processor.process(videos=input_videos, **kwargs)
+
+            for key, value in video_inputs.items():
+                inputs[f"video_input_{key}"] = value
+
+        if input_audios:
+            audio_inputs: BatchFeature = self.input_audio_processor.process(audios=input_audios, **kwargs)
+            for key, value in audio_inputs.items():
+                inputs[f"audio_input_{key}"] = value
+
+        if output_videos or output_audios:
             raise NotImplementedError
 
         return BatchFeature(data=inputs)
@@ -110,6 +130,12 @@ class SeedOmniProcessor(ProcessorMixin):
             processor = processor[0]
 
         for prefix in cls.processor_prefixes:
-            setattr(processor, f"{prefix}_processor", None)
+            if exists(pretrained_model_name_or_path + f"/{prefix}_processor"):
+                sub_processor = AutoProcessor.from_pretrained(
+                    os.path.join(pretrained_model_name_or_path, f"{prefix}_processor")
+                )
+                setattr(processor, f"{prefix}_processor", sub_processor)
+            else:
+                setattr(processor, f"{prefix}_processor", None)
 
         return processor

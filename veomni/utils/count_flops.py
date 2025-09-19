@@ -77,7 +77,7 @@ class VeomniFlopsCounter:
             # qwen3 has additional RMSNorm layers for q and k.
             # RMSNorm layers have minimal impact at the MFU and can be ignored.
             "qwen3": self._estimate_qwen2_flops,
-            "seed": self._estimate_seed_flops,
+            "seed_oss": self._estimate_seed_flops,
         }
 
         self.config = config

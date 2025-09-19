@@ -4,6 +4,8 @@ model:
 data:
   train_path: fineweb_100BT
   train_size: 1000000000000
+  dataloader_type: native
+  datasets_type: iterable
   data_type: plaintext
   max_seq_len: 8192
   text_keys: text

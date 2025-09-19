@@ -2,6 +2,8 @@ model:
   model_path: qwen2vl-7b-instruct
 
 data:
+  dataloader_type: native
+  datasets_type: iterable
   train_path: sharegpt4v_pretrain
   chat_template: qwen2vl
   max_seq_len: 2048
@@ -23,3 +25,4 @@ train:
   micro_batch_size: 1
   global_batch_size: 32
   max_steps: 2000
+  ckpt_manager: bytecheckpoint

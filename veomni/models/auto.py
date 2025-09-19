@@ -13,13 +13,15 @@
 # limitations under the License.
 
 
-from typing import TYPE_CHECKING, Any, Dict, Literal, Optional
+import os
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Union
 
 import torch
 from transformers import (
     AutoConfig,
     AutoProcessor,
     AutoTokenizer,
+    PretrainedConfig,
     PreTrainedModel,
 )
 
@@ -49,14 +51,14 @@ def build_processor(processor_path: str) -> "ProcessorMixin":
 
 
 def build_foundation_model(
-    config_path: str,
+    config_path: Union[str, PretrainedConfig],
     weights_path: Optional[str] = None,
     torch_dtype: Literal["float16", "bfloat16", "float32"] = "bfloat16",
     attn_implementation: Optional[Literal["eager", "sdpa", "flash_attention_2"]] = "flash_attention_2",
     moe_implementation: Optional[Literal["eager", "fused"]] = None,
     init_device: Literal["cpu", "cuda", "meta"] = "cuda",
     config_kwargs: Optional[Dict[str, Any]] = None,
-    force_use_huggingface: bool = False,
+    force_use_huggingface: Optional[bool] = False,
 ) -> "PreTrainedModel":
     """
     Builds the foundation model.
@@ -66,7 +68,10 @@ def build_foundation_model(
     if config_kwargs is None:
         config_kwargs = {}
 
-    config = AutoConfig.from_pretrained(config_path, trust_remote_code=True, **config_kwargs)
+    if isinstance(config_path, PretrainedConfig):
+        config = config_path
+    else:
+        config = AutoConfig.from_pretrained(config_path, trust_remote_code=True, **config_kwargs)
 
     if moe_implementation is not None:
         if moe_implementation not in ["eager", "fused"]:
@@ -77,9 +82,24 @@ def build_foundation_model(
     loader: Optional[BaseModelLoader] = get_loader(config, force_use_huggingface)
 
     if not force_use_huggingface:
+        from functools import partial
+
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
         from ..ops.attention import flash_attention_forward
+
+        seed_kernel_attn_implementation = os.getenv("SEED_KERNEL_ATTN_IMPLEMENTATION")
+
+        if seed_kernel_attn_implementation == "fa3":
+            flash_attention_forward = partial(flash_attention_forward, implementation="fa3")
+        elif seed_kernel_attn_implementation == "fa2":
+            flash_attention_forward = partial(flash_attention_forward, implementation="fa2")
+        elif seed_kernel_attn_implementation == "lego":
+            flash_attention_forward = partial(flash_attention_forward, implementation="lego")
+        else:
+            assert seed_kernel_attn_implementation is None, (
+                f"seed_kernel_attn_implementation={seed_kernel_attn_implementation} is not supported"
+            )
 
         ALL_ATTENTION_FUNCTIONS.register("flash_attention_2", flash_attention_forward)
 
@@ -101,4 +121,5 @@ def build_foundation_model(
         empty_init=empty_init,
         init_device=init_device,
     )
+
     return model

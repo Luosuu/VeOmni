@@ -41,8 +41,10 @@ class Qwen2VLVisionModel(BaseEncoderModelMixin, Qwen2VisionTransformerPretrained
 
     def set_projector_trainable_only(self):
         self.requires_grad_(False)
-        if self.config.add_projector:
+        if self.config.add_projector and self.config.output_size is not None:
             self.projector.requires_grad_(True)
+            if self.config.train_origin_projector:
+                self.merger.requires_grad_(True)
         else:
             self.merger.requires_grad_(True)
 

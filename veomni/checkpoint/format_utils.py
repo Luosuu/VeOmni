@@ -17,9 +17,7 @@ import os
 from abc import ABC
 from typing import Any, Dict, Union
 
-import torch
-
-from ..utils.import_utils import is_torch_version_greater_than
+from ..utils.import_utils import is_torch_version_greater_than, is_veomni_patch_available
 from ..utils.logging import get_logger
 
 
@@ -36,15 +34,24 @@ logger = get_logger(__name__)
 _MODEL_DIR = "model"
 
 
+if is_veomni_patch_available():
+    # for internal use only
+    from veomni_patch.checkpoint.format_utils import omnistore_ckpt_to_state_dict
+else:
+
+    def omnistore_ckpt_to_state_dict(*args, **kwargs):
+        raise ValueError("omnistore_ckpt_to_state_dict is not available, please install veomni_patch")
+
+
 def ckpt_to_state_dict(
     save_checkpoint_path: Union[str, os.PathLike],
     output_dir: Union[str, os.PathLike],
-    ckpt_manager: str = "bytecheckpoint",
+    ckpt_manager: str = "omnistore",
 ) -> Dict[str, Any]:
     """
     Interface to convert a checkpoint to a state_dict.
     Supported checkpoint managers:
-        - bytecheckpoint
+        - omnistore
         - dcp
         - native
 
@@ -55,15 +62,12 @@ def ckpt_to_state_dict(
     Returns:
         state_dict: State dict.
     """
-    if ckpt_manager == "bytecheckpoint":
+    if ckpt_manager == "omnistore":
+        state_dict = omnistore_ckpt_to_state_dict(save_checkpoint_path, output_dir)
+    elif ckpt_manager == "bytecheckpoint":
         state_dict = bytecheckpoint_ckpt_to_state_dict(save_checkpoint_path, output_dir)
     elif ckpt_manager == "dcp":
         state_dict = dcp_to_torch_state_dict(save_checkpoint_path)
-    elif ckpt_manager == "native":
-        model_dir = os.path.join(save_checkpoint_path, _MODEL_DIR)
-        if os.path.exists(model_dir):
-            save_checkpoint_path = model_dir
-        state_dict = torch.load(save_checkpoint_path)
     else:
         raise ValueError(f"Unknown checkpoint manager: {ckpt_manager}")
     return state_dict

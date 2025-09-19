@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-from . import movqgan
+from . import cosmos, janusvq16, movqgan
 from .base import BaseDecoderConfigMixin, BaseDecoderModelMixin, BaseDecoderOutput
 
 
@@ -22,4 +22,15 @@ __all__ = [
     "BaseDecoderModelMixin",
     "BaseDecoderOutput",
     "movqgan",
+    "cosmos",
+    "janusvq16",
 ]
+
+
+from ....utils.import_utils import is_diffusers_available
+
+
+if is_diffusers_available():
+    from . import instruct_pix2pix, ultra_edit
+
+    __all__ += ["instruct_pix2pix", "ultra_edit"]

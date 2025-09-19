@@ -29,7 +29,13 @@ from typing import Any, Callable, Dict, List, Literal, Optional, TypeVar, Union,
 
 import yaml
 
-from . import logging
+
+try:
+    from hdfs_io import copy, exists, makedirs  # for internal use only
+except ImportError:
+    from .hdfs_io import copy, exists, makedirs
+
+from . import helper, logging
 
 
 T = TypeVar("T")
@@ -41,15 +47,19 @@ logger = logging.get_logger(__name__)
 class ModelArguments:
     config_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to the model config. Defaults to `model_path`."},
+        metadata={"help": "Local path/HDFS path to the model config. Defaults to `model_path`."},
     )
     model_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to the pre-trained model. If unspecified, use random init."},
+        metadata={"help": "Local path/HDFS path to the pre-trained model. If unspecified, use random init."},
     )
     tokenizer_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to the tokenizer. Defaults to `config_path`."},
+        metadata={"help": "Local path/HDFS path to the tokenizer. Defaults to `config_path`."},
+    )
+    foundation: Dict[str, str] = field(
+        default_factory=dict,
+        metadata={"help": "Foundation model extra config."},
     )
     encoders: Dict[Literal["image"], Dict[str, str]] = field(
         default_factory=dict,
@@ -71,7 +81,7 @@ class ModelArguments:
         default=False,
         metadata={"help": "Whether to encode target with decoder. Only supports stable diffusion as decoder."},
     )
-    attn_implementation: Optional[Literal["eager", "sdpa", "flash_attention_2", "flash_attention_3"]] = field(
+    attn_implementation: Optional[Literal["eager", "sdpa", "flash_attention_2", "native-sparse"]] = field(
         default="flash_attention_2",
         metadata={"help": "Attention implementation to use."},
     )
@@ -98,9 +108,12 @@ class ModelArguments:
         if self.tokenizer_path is None:
             self.tokenizer_path = self.config_path
 
+        suppoerted_encoder_types = ["image", "video", "audio"]
         for encoder_type, encoder_args in self.encoders.items():
-            if encoder_type not in ["image"]:
-                raise ValueError(f"Unsupported encoder type: {encoder_type}. Should be one of {{image}}.")
+            if encoder_type not in suppoerted_encoder_types:
+                raise ValueError(
+                    f"Unsupported encoder type: {encoder_type}. Should be one of {suppoerted_encoder_types}."
+                )
 
             if encoder_args.get("config_path") is None and encoder_args.get("model_path") is None:
                 raise ValueError("`config_path` and `model_path` cannot be both empty.")
@@ -108,9 +121,12 @@ class ModelArguments:
             if encoder_args.get("config_path") is None:
                 encoder_args["config_path"] = encoder_args["model_path"]
 
+        supported_decoder_types = ["image"]
         for decoder_type, decoder_args in self.decoders.items():
-            if decoder_type not in ["image"]:
-                raise ValueError(f"Unsupported decoder type: {decoder_type}. Should be one of {{image}}.")
+            if decoder_type not in supported_decoder_types:
+                raise ValueError(
+                    f"Unsupported decoder type: {decoder_type}. Should be one of {supported_decoder_types}."
+                )
 
             if decoder_args.get("config_path") is None and decoder_args.get("model_path") is None:
                 raise ValueError("`config_path` and `model_path` cannot be both empty.")
@@ -122,7 +138,7 @@ class ModelArguments:
 @dataclass
 class DataArguments:
     train_path: str = field(
-        metadata={"help": "Path of the training data. Use comma to separate multiple datasets."},
+        metadata={"help": "Local path/HDFS path of the training data. Use comma to separate multiple datasets."},
     )
     train_size: int = field(
         default=10_000_000,
@@ -132,12 +148,12 @@ class DataArguments:
         default="conversation",
         metadata={"help": "Type of the training data."},
     )
-    dataloader_type: Literal["native"] = field(
-        default="native",
+    dataloader_type: Literal["native", "streaming"] = field(
+        default="streaming",
         metadata={"help": "Type of the dataloader."},
     )
-    datasets_type: Literal["mapping", "iterable"] = field(
-        default="mapping",
+    datasets_type: Literal["byted", "mapping", "iterable"] = field(
+        default="byted",
         metadata={"help": "Type of the datasets."},
     )
     data_name: str = field(
@@ -147,6 +163,10 @@ class DataArguments:
     data_tag: Literal["default", "mmtag"] = field(
         default="default",
         metadata={"help": "Dataset tag for multimodal training."},
+    )
+    drop_resume_buffer: bool = field(
+        default=False,
+        metadata={"help": "drop data in saved buffer"},
     )
     text_keys: str = field(
         default=None,
@@ -180,8 +200,29 @@ class DataArguments:
         default=True,
         metadata={"help": "Whether to pin memory for dataloader."},
     )
+    shuffle_shard_nums: int = field(
+        default=1,
+        metadata={"help": "Number of shards to shuffle in byted dataset."},
+    )
+    split_nums: int = field(
+        default=1,
+        metadata={"help": "Number of splits for multisoure stream to reduce memory"},
+    )
+    predownload_factor: float = field(
+        default=0.5,
+        metadata={"help": "The factor to determine the number of samples to pre-download using byted dataset"},
+    )
+    silent_exception: bool = field(
+        default=False,
+        metadata={"help": "Whether to ignore exceptions using byted dataset. Defaults to ``False``"},
+    )
 
     def __post_init__(self):
+        self.enable_multisource = self.train_path.endswith(".yaml")
+        if self.enable_multisource and self.shuffle_shard_nums != 1:
+            self.shuffle_shard_nums = 1
+            logger.info_rank0("`shuffle_shard_nums` is set to 1 when using multisource dataset.")
+
         if self.text_keys is None:
             if self.data_type == "plaintext":
                 self.text_keys = "content_split"
@@ -189,6 +230,9 @@ class DataArguments:
                 self.text_keys = "messages"
             else:
                 raise ValueError(f"Unknown data type: {self.data_type}")
+
+        if self.num_workers == 0:
+            self.prefetch_factor = None
 
 
 @dataclass
@@ -212,6 +256,15 @@ class TrainingArguments:
         default=0,
         metadata={"help": "L2 regularization strength."},
     )
+    no_decay_modules: List[str] = field(
+        default_factory=list,
+        metadata={"help": "Modules without weight decay, for example, RMSNorm."},
+    )
+    no_decay_params: List[str] = field(
+        default_factory=list,
+        metadata={"help": "Parameters without weight decay, for example, bias."},
+    )
+
     optimizer: Literal["adamw", "anyprecision_adamw"] = field(
         default="adamw",
         metadata={"help": "Optimizer. Default to adamw."},
@@ -248,6 +301,10 @@ class TrainingArguments:
         default=0,
         metadata={"help": "Number of pad tokens in dynamic batch."},
     )
+    dyn_bsz_runtime: Literal["main", "worker"] = field(
+        default="worker",
+        metadata={"help": "Use main process or worker process to run dynamic batch size."},
+    )
     dyn_bsz_buffer_size: int = field(
         default=200,
         metadata={"help": "Buffer size for dynamic batch size."},
@@ -271,10 +328,6 @@ class TrainingArguments:
     lr_decay_ratio: float = field(
         default=1.0,
         metadata={"help": "Ratio of learning rate decay steps."},
-    )
-    use_doptim: bool = field(
-        default=False,
-        metadata={"help": "Use veScale's ZeRO optimizer."},
     )
     enable_mixed_precision: bool = field(
         default=True,
@@ -310,9 +363,11 @@ class TrainingArguments:
             "help": "When enabling activation offload, `activation_gpu_limit` GB activations are allowed to reserve on GPU."
         },
     )
-    enable_manual_eager: bool = field(
+    enable_rank0_init: bool = field(
         default=False,
-        metadata={"help": "Enable veScale's manual eager."},
+        metadata={
+            "help": "Enable rank0-only initialization for FSDP1 training. Note: this argument will be deprecated in the future, please use `init_device=cpu` instead."
+        },
     )
     init_device: Literal["cpu", "cuda", "meta"] = field(
         default="cuda",
@@ -328,7 +383,11 @@ class TrainingArguments:
         default=500,
         metadata={"help": "Number of steps between two empty cache operations."},
     )
-    data_parallel_mode: Literal["ddp", "fsdp1", "fsdp2", "fsdp2-vescale"] = field(
+    gc_steps: int = field(
+        default=500,
+        metadata={"help": "Number of steps between two gc.collect. GC is disabled if it is positive."},
+    )
+    data_parallel_mode: Literal["ddp", "fsdp1", "fsdp2"] = field(
         default="ddp",
         metadata={"help": "Data parallel mode."},
     )
@@ -348,6 +407,10 @@ class TrainingArguments:
         default=1,
         metadata={"help": "Expert parallel size."},
     )
+    ep_outside: bool = field(
+        default=False,
+        metadata={"help": "Enable expert parallelism outside in ep-fsdp."},
+    )
     pipeline_parallel_size: int = field(
         default=1,
         metadata={"help": "Pipeline parallel size."},
@@ -360,13 +423,17 @@ class TrainingArguments:
         default=1,
         metadata={"help": "Ring-attn context parallel size."},
     )
-    ckpt_manager: Literal["bytecheckpoint", "dcp"] = field(
-        default="bytecheckpoint",
+    ckpt_manager: Literal["omnistore", "dcp", "bytecheckpoint"] = field(
+        default="omnistore",
         metadata={"help": "Checkpoint manager."},
+    )
+    save_async: bool = field(
+        default=False,
+        metadata={"help": "Whether to save checkpoint asynchronously."},
     )
     load_checkpoint_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to bytecheckpoint checkpoint to resume from."},
+        metadata={"help": "Path to checkpoint to resume from."},
     )
     save_steps: int = field(
         default=0,
@@ -383,6 +450,10 @@ class TrainingArguments:
     seed: int = field(
         default=42,
         metadata={"help": "Random seed."},
+    )
+    enable_compile: bool = field(
+        default=False,
+        metadata={"help": "Enable torch compile."},
     )
     use_wandb: bool = field(
         default=True,
@@ -455,15 +526,18 @@ class TrainingArguments:
             * self.context_parallel_size
             * self.tensor_parallel_size
         )
+
         # configure data parallel size
         if self.data_parallel_replicate_size > 0 and self.data_parallel_shard_size > 0:
             assert self.data_parallel_size == self.data_parallel_replicate_size * self.data_parallel_shard_size, (
                 f"data_parallel_size should be equal to data_parallel_replicate_size: {self.data_parallel_replicate_size} * data_parallel_shard_size: {self.data_parallel_shard_size}."
             )
+
         elif self.data_parallel_replicate_size > 0:
             if self.data_parallel_size % self.data_parallel_replicate_size != 0:
                 raise ValueError("data_parallel_size should be a multiple of data_parallel_replicate_size.")
             self.data_parallel_shard_size = self.data_parallel_size // self.data_parallel_replicate_size
+
         elif self.data_parallel_shard_size > 0:
             if self.data_parallel_size % self.data_parallel_shard_size != 0:
                 raise ValueError("data_parallel_size should be a multiple of data_parallel_shard_size.")
@@ -475,7 +549,22 @@ class TrainingArguments:
         if self.rmpad and self.rmpad_with_pos_ids:
             raise ValueError("`rmpad` and `rmpad_with_pos_ids` cannot be both True.")
 
+        assert int(os.getenv("GROUP_WORLD_SIZE", 1)) == 1 or helper.is_remote_path(self.output_dir), (
+            f"Number of distribute nodes is {int(os.getenv('GROUP_WORLD_SIZE'))}, `train.output_dir` requires a remote path, should use hdfs, fuse or nas path, but got {self.output_dir}."
+        )
+
         # init method check
+        # TODO: remove `enable_rank0_init`
+        logger.warning_rank0(
+            "`enable_rank0_init` will be deprecated in the future, please use `init_device=cpu` instead."
+        )
+        if self.enable_rank0_init:
+            if self.init_device != "cpu":
+                logger.warning_rank0(
+                    "`enable_rank0_init` is set to True, but `init_device` is not set to `cpu`. We change `init_device=cpu`."
+                    "If you try to init model in `cuda` or `meta`, please use `init_device = cuda` or `init_device = meta` instead."
+                )
+            self.init_device = "cpu"
         assert self.expert_parallel_size == 1 or self.init_device != "cpu", (
             "cpu init is not supported when enable ep. Please use `init_device = cuda` or `init_device = meta` instead."
         )
@@ -498,10 +587,20 @@ class TrainingArguments:
         if self.gradient_accumulation_steps > 1 and self.enable_fsdp_offload:
             raise ValueError("Gradient accumulation is not supported with FSDP offload.")
 
-        self.dataloader_batch_size = self.global_batch_size // self.data_parallel_size  # = micro bsz * grad accu
+        # calculate dataloader batch size (for StreamingDataset and StreamingDataLoader)
+        if (self.rmpad or self.rmpad_with_pos_ids) and self.dyn_bsz_runtime == "worker":
+            self.dataloader_batch_size = 1
+        else:
+            self.dataloader_batch_size = self.global_batch_size // self.data_parallel_size  # = micro bsz * grad accu
 
-        # merlin save paths
+        if self.load_checkpoint_path == "auto":
+            from .checkpoint_utils import get_checkpoint_path
+
+            self.load_checkpoint_path = get_checkpoint_path(self.output_dir)
+
+        # save paths
         self.save_checkpoint_path = os.path.join(self.output_dir, "checkpoints")
+        self.step2token_path = os.path.join(self.output_dir, "step2token.json")
         self.model_assets_dir = os.path.join(self.output_dir, "model_assets")
 
     def compute_train_steps(
@@ -538,11 +637,11 @@ class TrainingArguments:
 @dataclass
 class InferArguments:
     model_path: str = field(
-        metadata={"help": "Path to the pre-trained model."},
+        metadata={"help": "Local path/HDFS path to the pre-trained model."},
     )
     tokenizer_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to the tokenizer. Defaults to `config_path`."},
+        metadata={"help": "Local path/HDFS path to the tokenizer. Defaults to `config_path`."},
     )
     seed: int = field(
         default=42,
@@ -633,7 +732,6 @@ def parse_args(rootclass: T) -> T:
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     base_to_subclass = {}
     dict_fields = set()
-    list_fields = set()
     for subclass in fields(rootclass):
         base = subclass.name
         base_to_subclass[base] = subclass.default_factory
@@ -685,7 +783,6 @@ def parse_args(rootclass: T) -> T:
             elif isclass(origin_type) and issubclass(origin_type, list):
                 parser_kwargs["type"] = attr_type.__args__[0]
                 parser_kwargs["nargs"] = "+"
-                list_fields.add(f"{base}.{attr.name}")
                 if attr.default_factory is not MISSING:
                     parser_kwargs["default"] = attr.default_factory()
                 elif attr.default is MISSING:
@@ -726,20 +823,16 @@ def parse_args(rootclass: T) -> T:
     for base, arg_dict in input_data.items():
         for arg_name, arg_value in arg_dict.items():
             if f"--{base}.{arg_name}=" not in cmd_args_string:  # lower priority
-                # Skip list fields with None values to use default
-                if f"{base}.{arg_name}" in list_fields and arg_value is None:
-                    continue
-
                 cmd_args.append(f"--{base}.{arg_name}")
-                if f"{base}.{arg_name}" in list_fields and isinstance(arg_value, list):
-                    # For list fields, extend the arguments with individual elements
-                    cmd_args.extend([str(item) for item in arg_value])
+                if isinstance(arg_value, str):
+                    cmd_args.append(arg_value)
+                elif isinstance(arg_value, list):
+                    cmd_args.extend(str(x) for x in arg_value)
                 else:
-                    cmd_args.append(arg_value if isinstance(arg_value, str) else json.dumps(arg_value))
-
+                    cmd_args.append(json.dumps(arg_value))
     args, remaining_args = parser.parse_known_args(cmd_args)
     if remaining_args:
-        raise ValueError(f"Some specified arguments are not used by the ArgumentParser: {remaining_args}")
+        logger.warning(f"Some specified arguments are not used by the ArgumentParser: {remaining_args}")
 
     parse_result = defaultdict(dict)
     for key, value in vars(args).items():
@@ -767,10 +860,22 @@ def save_args(args: T, output_path: str) -> None:
         args (dataclass): Arguments.
         output_path (str): Output path.
     """
-
-    local_dir = output_path
+    if output_path.startswith("hdfs://"):
+        local_dir = helper.get_cache_dir()
+        remote_dir = output_path
+    else:
+        logger.warning_once("Recommend to use hdfs path or hdfs_fuse path as the output path.")
+        local_dir = output_path
+        remote_dir = None
 
     os.makedirs(local_dir, exist_ok=True)
     local_path = os.path.join(local_dir, "veomni_cli.yaml")
     with open(local_path, "w") as f:
         f.write(yaml.safe_dump(asdict(args), default_flow_style=False))
+
+    if remote_dir is not None:
+        if not exists(remote_dir):
+            makedirs(remote_dir)
+
+        remote_path = os.path.join(remote_dir, "veomni_cli.yaml")
+        copy(local_path, helper.convert_hdfs_fuse_path(remote_path))

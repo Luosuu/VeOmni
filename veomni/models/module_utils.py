@@ -15,12 +15,20 @@
 
 import json
 import os
+import re
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Literal, Optional, Sequence, Tuple, Union
 
 import torch
+
+
+try:
+    from hdfs_io import copy  # for internal use only
+except ImportError:
+    from ..utils.hdfs_io import copy
 from diffusers.utils import SAFE_WEIGHTS_INDEX_NAME as DIFFUSERS_SAFE_WEIGHTS_INDEX_NAME
 from diffusers.utils import SAFETENSORS_WEIGHTS_NAME as DIFFUSERS_SAFETENSORS_WEIGHTS_NAME
 from torch import distributed as dist
@@ -31,7 +39,7 @@ from transformers.utils.hub import cached_file, get_checkpoint_shard_files
 from transformers.utils.import_utils import is_safetensors_available
 
 from ..utils import logging
-from ..utils.helper import empty_cache, get_dtype_size
+from ..utils.helper import empty_cache, get_cache_dir, get_dtype_size
 
 
 if is_safetensors_available():
@@ -41,6 +49,8 @@ if is_safetensors_available():
 
 if TYPE_CHECKING:
     from transformers import GenerationConfig, PretrainedConfig, PreTrainedModel, PreTrainedTokenizer, ProcessorMixin
+
+    from ..distributed.parallel_plan import ParallelPlan
 
     ModelAssets = Union[GenerationConfig, PretrainedConfig, PreTrainedTokenizer, ProcessorMixin]
 
@@ -63,7 +73,17 @@ def init_empty_weights():
             param_cls = type(module._parameters[name])
             kwargs = module._parameters[name].__dict__
             kwargs["requires_grad"] = param.requires_grad
-            module._parameters[name] = param_cls(module._parameters[name].to("meta"), **kwargs)
+            # When we have a case of tensor2 = tensor1, it would call the set_attr
+            # of param, which in turn would call the register_parameter API.
+            # In this case, the new param is already on meta-device, since it was moved
+            # previously when it was initialized. Hence, when resetting, you can
+            # directly assign that tensor instead of re-init. If you re-init you would
+            # lose the relationship.
+            module._parameters[name] = (
+                param
+                if param.device == torch.device("meta")
+                else param_cls(module._parameters[name].to("meta"), **kwargs)
+            )
 
     try:
         nn.Module.register_parameter = register_empty_parameter
@@ -142,14 +162,21 @@ def _dispatch_parameter(
     name: str,
     tensor: "torch.Tensor",
     dtensor_factory: Optional[Callable[["torch.Tensor", Any, Any], "torch.Tensor"]] = None,
+    parallel_plan: Optional["ParallelPlan"] = None,
 ) -> None:
     """
     Assigns parameter to an empty model.
 
     NOTE: FSDP module must use in-place operators.
     """
-    module, name = _find_submodule(module, name)
-    orig_tensor = module._parameters[name].data
+    full_param_name = name
+    module, local_name = _find_submodule(module, name)
+    orig_tensor = module._parameters[local_name].data
+
+    # Handle parameter slicing according to parallel_plan, now only EP-aware
+    if parallel_plan is not None:
+        tensor = parallel_plan.shard_tensor(tensor, full_param_name, orig_tensor.shape)
+
     tensor = tensor.to(orig_tensor)
     if hasattr(orig_tensor, "device_mesh"):  # dtensor
         if orig_tensor.device.type == "cpu":
@@ -157,9 +184,9 @@ def _dispatch_parameter(
 
         device_mesh = getattr(orig_tensor, "device_mesh")
         placements = getattr(orig_tensor, "placements")
-        module._parameters[name].data.copy_(dtensor_factory(tensor, device_mesh, placements))
+        module._parameters[local_name].data.copy_(dtensor_factory(tensor, device_mesh, placements))
     else:  # not dtensor
-        module._parameters[name].data.copy_(tensor)
+        module._parameters[local_name].data.copy_(tensor)
 
 
 def _dispatch_buffer(
@@ -199,6 +226,29 @@ def _init_parameter(
     module.apply(init_func)
 
 
+def _convert_weight_key(key: str, model: "PreTrainedModel") -> str:
+    """
+    Convert a single state dict key using the model's checkpoint conversion mapping.
+
+    For example, in the InternVL, we have _checkpoint_conversion_mapping = {"^model": "language_model"}
+
+    This is to adapt to the big breaking change introduced in HF transformers 4.52:
+    https://github.com/huggingface/transformers/pull/38385
+    """
+    if not hasattr(model, "_checkpoint_conversion_mapping"):
+        return key
+
+    for pattern, replacement in model._checkpoint_conversion_mapping.items():
+        replacement = replacement.lstrip("^")  # strip off un-needed chars and patterns
+        replacement = re.sub(r"\(.*\)", "", replacement)
+        converted_key, n_replace = re.subn(pattern, replacement, key)
+        # Early exit of the loop
+        if n_replace > 0:
+            return converted_key
+
+    return key
+
+
 @torch.no_grad()
 def load_model_weights(
     model: Union["nn.Module", "PreTrainedModel"],
@@ -212,16 +262,26 @@ def load_model_weights(
     buffer_dict = {name: buffer.clone() for name, buffer in model.named_buffers()}
     parameter_names = {name for name, _ in model.named_parameters()}
     model.to_empty(device=init_device)
+
+    # Get parallel plan if available
+    parallel_plan = None
+    if hasattr(model, "get_parallel_plan"):
+        parallel_plan = model.get_parallel_plan()
+
     state_dict_iterators = _load_state_dict(weights_path)
     for state_dict_iterator in tqdm(
         state_dict_iterators, desc="Loading checkpoint shards", disable=int(os.getenv("LOCAL_RANK", "-1")) > 0
     ):
         for name, tensor in state_dict_iterator:
+            # IMPORTANT: Call this function to adapt to transformers 4.52 breaking change
+            # on model structure. See the comment for details.
+            name = _convert_weight_key(name, model)
+
             if name in buffer_dict.keys():  # persistent buffers
                 buffer_dict[name] = tensor.clone()
             elif name in parameter_names:
                 parameter_names.remove(name)
-                _dispatch_parameter(model, name, tensor, dtensor_factory)
+                _dispatch_parameter(model, name, tensor, dtensor_factory, parallel_plan)
             else:
                 logger.info_rank0(f"Unexpected key in state dict: {name}.")
 
@@ -327,6 +387,13 @@ def save_model_weights(
 
     If global_rank is given, it will assume it is executed on all ranks.
     """
+    if output_dir.startswith("hdfs://"):
+        hdfs_dir = output_dir
+        hdfs_upper_dir = output_dir.rstrip("/")
+        hdfs_upper_dir = hdfs_upper_dir[: hdfs_upper_dir.rfind("/")]
+        output_dir = get_cache_dir(output_dir)
+    else:
+        hdfs_dir = None
 
     os.makedirs(output_dir, exist_ok=True)
     is_sharded, total_size, weight_map = _get_shard_info(state_dict, save_dtype, shard_size, safe_serialization)
@@ -366,7 +433,6 @@ def save_model_weights(
                 "metadata": {"total_size": total_size},
                 "weight_map": weight_map,
             }
-
             index_file = SAFE_WEIGHTS_INDEX_NAME if safe_serialization else WEIGHTS_INDEX_NAME
             with open(os.path.join(output_dir, index_file), "w", encoding="utf-8") as f:
                 content = json.dumps(index, indent=2, sort_keys=True) + "\n"
@@ -383,10 +449,57 @@ def save_model_weights(
                 else:
                     logger.warning(f"Model asset {model_asset} should implement `save_pretrained`.")
 
+        if hdfs_dir is not None:
+            copy(output_dir, hdfs_upper_dir)
+            logger.info(f"Model weights uploaded to {hdfs_dir}.")
+
 
 def save_model_assets(output_dir: Union[str, "os.PathLike"], model_assets: Sequence["ModelAssets"]):
+    if output_dir.startswith("hdfs://"):
+        hdfs_dir = output_dir
+        hdfs_upper_dir = output_dir.rstrip("/")
+        hdfs_upper_dir = hdfs_upper_dir[: hdfs_upper_dir.rfind("/")]
+        output_dir = get_cache_dir(output_dir)
+    else:
+        hdfs_dir = None
+
     for model_asset in model_assets:
         if hasattr(model_asset, "save_pretrained"):
             model_asset.save_pretrained(output_dir)
         else:
             logger.warning(f"Model asset {model_asset} should implement `save_pretrained`.")
+
+    if hdfs_dir is not None:
+        copy(output_dir, hdfs_upper_dir)
+        logger.info(f"Model config and tokenizer uploaded to {hdfs_dir}.")
+
+
+class GradientCheckpointingLayer(nn.Module):
+    """Base class for layers with gradient checkpointing.
+
+    This class enables gradient checkpointing functionality for a layer. By default, gradient checkpointing is disabled
+    (`gradient_checkpointing = False`). When `model.set_gradient_checkpointing()` is called, gradient checkpointing is
+    enabled by setting `gradient_checkpointing = True` and assigning a checkpointing function to `_gradient_checkpointing_func`.
+
+    Important:
+
+        When using gradient checkpointing with `use_reentrant=True`, inputs that require gradients (e.g. hidden states)
+        must be passed as positional arguments (`*args`) rather than keyword arguments to properly propagate gradients.
+
+        Example:
+
+            ```python
+            >>> # Correct - hidden_states passed as positional arg
+            >>> out = self.layer(hidden_states, attention_mask=attention_mask)
+
+            >>> # Incorrect - hidden_states passed as keyword arg
+            >>> out = self.layer(hidden_states=hidden_states, attention_mask=attention_mask)
+            ```
+    """
+
+    gradient_checkpointing = False
+
+    def __call__(self, *args, **kwargs):
+        if self.gradient_checkpointing and self.training:
+            return self._gradient_checkpointing_func(partial(super().__call__, **kwargs), *args)
+        return super().__call__(*args, **kwargs)

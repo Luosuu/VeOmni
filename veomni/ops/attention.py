@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 import torch
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
@@ -9,7 +9,11 @@ from ..distributed.sequence_parallel import (
     gather_seq_scatter_heads,
 )
 from ..utils import logging
+from ..utils.import_utils import is_seed_kernels_available
 
+
+if is_seed_kernels_available():
+    from seed_kernels.transformers.functional import seed_flash_attention_forward
 
 logger = logging.get_logger(__name__)
 
@@ -36,6 +40,7 @@ def flash_attention_forward(
     scaling: Optional[float] = None,
     sliding_window: Optional[int] = None,
     softcap: Optional[float] = None,
+    implementation: Optional[Literal["fa2", "lego", "fa3"]] = None,
     **kwargs,
 ) -> Tuple[torch.Tensor, None]:
     if kwargs.get("output_attentions", False) or kwargs.get("head_mask", None) is not None:
@@ -104,21 +109,44 @@ def flash_attention_forward(
     # Only after all_to_all we got the full seq_len
     seq_len = query.shape[1]
 
-    attn_output: torch.Tensor = _flash_attention_forward(
-        query,
-        key,
-        value,
-        attention_mask,
-        query_length=seq_len,
-        is_causal=module.is_causal,
-        dropout=dropout,
-        position_ids=position_ids,
-        softmax_scale=scaling,
-        sliding_window=sliding_window,
-        softcap=softcap,
-        use_top_left_mask=False,
-        **kwargs,
-    )
+    if is_seed_kernels_available() and implementation is not None:
+        attn_output: torch.Tensor = seed_flash_attention_forward(
+            query,
+            key,
+            value,
+            attention_mask,
+            query_length=seq_len,
+            is_causal=module.is_causal,
+            dropout=dropout,
+            position_ids=position_ids,
+            softmax_scale=scaling,
+            sliding_window=sliding_window,
+            softcap=softcap,
+            use_top_left_mask=False,
+            implementation=implementation,
+            cu_seqlens=kwargs.get("cu_seq_lens_q", None),
+            max_seqlen=kwargs.get("max_length_q", None),
+            **kwargs,
+        )
+    else:
+        assert implementation is None, (
+            f"You set {implementation=} but seed_kernels is not installed. Check --model.attn_implementation."
+        )
+        attn_output: torch.Tensor = _flash_attention_forward(
+            query,
+            key,
+            value,
+            attention_mask,
+            query_length=seq_len,
+            is_causal=module.is_causal,
+            dropout=dropout,
+            position_ids=position_ids,
+            softmax_scale=scaling,
+            sliding_window=sliding_window,
+            softcap=softcap,
+            use_top_left_mask=False,
+            **kwargs,
+        )
 
     # Ulysses patch
     if ulysses_enabled:

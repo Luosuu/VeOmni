@@ -615,10 +615,8 @@ class MoVQGAN(PreTrainedModel):
         dec = self.decoder(quant2, quant)
         return dec
 
-    def decode_code(self, code_b):
-        quant = self.quantize.embedding(code_b.flatten())
-        quant = quant.view((1, 32, 32, 4))
-        quant = rearrange(quant, "b h w c -> b c h w").contiguous()
+    def decode_code(self, code_b, shape=None):
+        quant = self.quantize.get_codebook_entry(code_b, shape=shape)
         quant2 = self.post_quant_conv(quant)
         dec = self.decoder(quant2, quant)
         return dec

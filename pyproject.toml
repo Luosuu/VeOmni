@@ -2,21 +2,65 @@
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[project.urls]
+"Homepage" = "https://github.com/ByteDance-Seed/VeOmni"
+"Source Code" = "https://github.com/ByteDance-Seed/VeOmni"
+
 [project]
 name = "veomni"
-dynamic = ["dependencies", "optional-dependencies"]
-version = "0.0.3"
+dynamic = ["version"]
+description = "VeOmni: Scaling any Modality Model Training to any Accelerators with PyTorch native Training Framework"
 authors = [
   { name="Fazzie", email="maqianli.fazzie@bytedance.com" },
 ]
-description = "VeOmni: Scaling any Modality Model Training to any Accelerators with PyTorch native Training Framework"
-requires-python = ">=3.8"
-license = "Apache-2.0"
-license-files = ["LICENSE"]
+requires-python = ">=3.8.0"
+license = { file = "LICENSE" }
 
-[project.urls]
-Homepage = "https://github.com/ByteDance-Seed/VeOmni"
-Issues = "https://github.com/ByteDance-Seed/VeOmni/issues"
+dependencies = [
+  "blobfile>=3.0.0",
+  "bytecheckpoint",
+  "datasets>=2.16.0,<=2.21.0",
+  "packaging>=23.0,<26.0",
+  "torchdata>=0.8.0,<1.0",
+  "tiktoken>=0.9.0",
+  "diffusers>=0.30.0,<=0.31.0",
+  "packaging>=23.0,<26.0",
+  "transformers[torch]>=4.51.3,<4.57.0",
+]
+
+
+
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit>=4.0.0,<5.0",
+    "ruff>=0.7.0,<1.0",
+    "pytest>=6.0.0,<8.0",
+    "expecttest>=0.3.0,<0.4"
+]
+audio = [
+    "av>=14.3.0,<15.0",
+    "librosa>=0.11.0,<0.12",
+    "soundfile>=0.13.1,<0.14"
+]
+dit = [
+    "diffusers>=0.30.0,<=0.31.0",
+    "bitsandbytes>=0.46.0,<=0.47.0"
+]
+npu = [
+    "torchvision>=0.16.0,<0.16.1"
+]
+gpu =[
+  "liger-kernel>=0.5.5,<=0.5.6",
+  "flash-attn==2.6.3",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "veomni.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", "ci*", "configs*", "veomni_patch", "tasks", "scripts"]
 
 [tool.ruff]
 target-version = "py38"
@@ -33,7 +77,7 @@ select = ["C", "E", "F", "I", "W"]
 [tool.ruff.lint.isort]
 lines-after-imports = 2
 known-first-party = ["veomni"]
-known-third-party = ["torch", "transformers", "wandb"]
+known-third-party = ["torch", "transformers", "vescale", "wandb"]
 
 [tool.ruff.format]
 quote-style = "double"

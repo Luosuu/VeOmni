@@ -14,11 +14,13 @@
 
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Dict, List, Sequence
+from collections.abc import MutableMapping
+from typing import TYPE_CHECKING, Callable, Dict, List, Sequence
 
 import torch
 
-from ..utils import logging
+from veomni.utils import logging
+
 from .constants import IGNORE_INDEX
 
 
@@ -247,6 +249,45 @@ class ChatmlTemplate(ChatTemplate):
         )
 
 
+class ChatTemplates(MutableMapping):
+    """ """
+
+    # Class instance object, so that a call to `register` can be reflected into all other files correctly, even if
+    # a new instance is created (in order to locally override a given function)
+    _global_mapping = {}
+
+    def __init__(self, templates: Dict[str, Callable] = {}):
+        self._local_mapping = {}
+        self._global_mapping.update(templates)
+
+    def __getitem__(self, key):
+        # First check if instance has a local override
+        if key in self._local_mapping:
+            return self._local_mapping[key]
+        return self._global_mapping[key]
+
+    def __setitem__(self, key, value):
+        # Allow local update of the default functions without impacting other instances
+        self._local_mapping.update({key: value})
+
+    def __delitem__(self, key):
+        del self._local_mapping[key]
+
+    def __iter__(self):
+        # Ensure we use all keys, with the overwritten ones on top
+        return iter({**self._global_mapping, **self._local_mapping})
+
+    def __len__(self):
+        return len(self._global_mapping.keys() | self._local_mapping.keys())
+
+    @classmethod
+    def register(cls, key: str, value: Callable):
+        cls._global_mapping.update({key: value})
+
+    def valid_keys(self) -> List[str]:
+        return list(self.keys())
+
+
 TEMPLATES = {
     "default": DefaultTemplate,
     "llama2": Llama2Template,
@@ -254,9 +295,11 @@ TEMPLATES = {
     "Janus": JanusTemplate,
 }
 
+CHAT_TEMPLATES = ChatTemplates(TEMPLATES)
+
 
 def build_chat_template(template_name: str, tokenizer: "PreTrainedTokenizer") -> "ChatTemplate":
-    if template_name not in TEMPLATES:
+    if template_name not in CHAT_TEMPLATES:
         raise ValueError(f"Unknown chat template: {template_name}")
 
-    return TEMPLATES[template_name](tokenizer)
+    return CHAT_TEMPLATES[template_name](tokenizer)

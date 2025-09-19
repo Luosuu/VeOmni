@@ -13,16 +13,16 @@
 # limitations under the License.
 
 
-from transformers import AutoConfig, AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor
 
 from .auto import SeedOmniConfig, SeedOmniModel, SeedOmniProcessor, build_omni_model, build_omni_processor
-from .decoder import movqgan
-from .encoder import qwen2_vl_vision_model
-from .foundation import qwen2_vl_foundation
+from .decoder import *
+from .encoder import *
+from .foundation import *
 
 
 AutoConfig.register("seed_omni", SeedOmniConfig)
-AutoModelForVision2Seq.register(SeedOmniConfig, SeedOmniModel)
+AutoModelForCausalLM.register(SeedOmniConfig, SeedOmniModel)
 AutoProcessor.register(SeedOmniConfig, SeedOmniProcessor)
 
 
@@ -32,7 +32,4 @@ __all__ = [
     "SeedOmniModel",
     "SeedOmniConfig",
     "SeedOmniProcessor",
-    "qwen2_vl_vision_model",
-    "movqgan",
-    "qwen2_vl_foundation",
 ]

@@ -29,12 +29,9 @@ def sharegpt4v_pretrain_preprocess(conversations, generation_ratio=0.0, **kwargs
         value = message["value"]
         if role == "human":
             value = value.replace("<image>", "")
-            constructed_conversation.append(["user", ("image", None), ("text", value)])
+            constructed_conversation.append(["user", ("image", None)])
         else:
-            if value is not None:
-                constructed_conversation.append(["assistant", ("text", value)])
-            else:
-                constructed_conversation.append(None)  # eval
+            constructed_conversation.append(["assistant", ("text", value)])
     generate_sample = random.random() < generation_ratio
     if generate_sample:
         instruction = f"Generate an image based on the following caption: {constructed_conversation[-1][0][1]}"
@@ -52,14 +49,11 @@ def sharegpt4v_sft_preprocess(conversations, **kwargs):
     for message in conversations:
         value = message["value"]
         role = role_mapping[message["from"]]
-        if value is None:
-            constructed_conversation.append(None)  # eval
+        if "<image>" in value:
+            value = value.replace("<image>", "")
+            constructed_conversation.append([role, ("image", None), ("text", value)])
         else:
-            if "<image>" in value:
-                value = value.replace("<image>", "")
-                constructed_conversation.append([role, ("image", None), ("text", value)])
-            else:
-                constructed_conversation.append([role, ("text", value)])
+            constructed_conversation.append([role, ("text", value)])
     return constructed_conversation
 
 
@@ -295,9 +289,36 @@ def mmsci_preprocess(conversations, **kwargs):
     return constructed_conversation
 
 
+def llava_video_preprocess(conversations, **kwargs):
+    role_mapping = {"human": "user", "gpt": "assistant"}
+    constructed_conversation = []
+    if conversations[0]["from"] != "human":  # Skip the first one if it is not from human
+        conversations = conversations[1:]
+    assert conversations[0]["from"] == "human"
+
+    for message in conversations:
+        value = message["value"]
+        role = role_mapping[message["from"]]
+        if "<image>" in value:
+            value = value.replace("<image>\n", "")
+            constructed_conversation.append([role, ("video", None), ("text", value)])
+        else:
+            constructed_conversation.append([role, ("text", value)])
+    return constructed_conversation
+
+
+def voice_assistant_preprocess(conversations, **kwargs):
+    constructed_conversation = [
+        ["user", ("audio", None)],
+        ["assistant", ("text", conversations[1]["value"])],
+    ]
+    return constructed_conversation
+
+
 DATASETS = {
     "sharegpt4v_pretrain": sharegpt4v_pretrain_preprocess,
     "sharegpt4v_captioner": sharegpt4v_pretrain_preprocess,
+    "sharegpt4v_captioner_sft": sharegpt4v_sft_preprocess,
     "sharegpt4v_sft": sharegpt4v_sft_preprocess,
     "doom": doom_preprocess,
     "seed_edit": seed_edit_preprocess,
@@ -320,6 +341,8 @@ DATASETS = {
     "megalith": megalith_preprocess,
     "journeydb": journeydb_preprocess,
     "dalle3_1m": dalle3_1m_preprocess,
+    "LLaVA-Video-178K": llava_video_preprocess,
+    "VoiceAssistant": voice_assistant_preprocess,
 }
 
 

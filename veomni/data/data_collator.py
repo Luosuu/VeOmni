@@ -77,6 +77,10 @@ class DataCollatorWithPadding(DataCollator):
 
     pad_token_id: int = 0
 
+    def __post_init__(self):
+        self.sp_size = get_parallel_state().sp_size
+        self.sp_enabled = get_parallel_state().sp_enabled
+
     def __call__(self, features: Sequence[Dict[str, "torch.Tensor"]]) -> Dict[str, "torch.Tensor"]:
         batch = defaultdict(list)
 
@@ -134,8 +138,17 @@ class DataCollatorWithPositionIDs(DataCollator):
                 [torch.arange(len(feature["input_ids"])) for feature in features]
             ).unsqueeze(0)
 
+        cu_seqlens = pos2culen(batch["position_ids"])
+
+        # Pass down already computed cu_seq_lens and max_length as the HF transformers
+        # FlashAttentionKwargs naming so that it can be used without recomputation every layer.
+        # HF model code would handle the pass down of those kwargs for us.
+        # Note that the recomputation would cause host->device sync which hurts performance and
+        # stability due to CPU instability.
+        batch["cu_seq_lens_q"] = batch["cu_seq_lens_k"] = cu_seqlens
+        batch["max_length_q"] = batch["max_length_k"] = cu_seqlens.diff().max().item()
+
         if "labels" in batch:
-            cu_seqlens = pos2culen(batch["position_ids"])
             batch["labels"][:, cu_seqlens[1:-1]] = IGNORE_INDEX
 
         return batch

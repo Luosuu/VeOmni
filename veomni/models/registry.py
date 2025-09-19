@@ -48,6 +48,12 @@ class _ModelRegistry:
     def get_model_cls_from_model_arch(self, model_arch: str) -> Type[nn.Module]:
         return self.model_arch_name_to_cls[model_arch]
 
+    def register_modeling_path(self, path: str) -> None:
+        """Add a new modeling path and register models from it."""
+        if path not in self.modeling_path:
+            self.modeling_path.append(path)
+            self._mapping_model_arch_name_to_cls(path)
+
     def _mapping_model_arch_name_to_cls(self, modeling_path: str):
         package = importlib.import_module(modeling_path)
         for _, name, ispkg in pkgutil.walk_packages(package.__path__, modeling_path + "."):
@@ -75,3 +81,6 @@ class _ModelRegistry:
 @lru_cache
 def get_registry():
     return _ModelRegistry(modeling_path=MODELING_PATH)
+
+
+ModelRegistry = get_registry()
