@@ -1,6 +1,5 @@
 import json
 import os
-import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List
 
@@ -14,7 +13,7 @@ from veomni.data.dataset import build_dummy_dataset
 from veomni.distributed.offloading import build_activation_offloading_context
 from veomni.distributed.parallel_state import get_parallel_state, init_parallel_state
 from veomni.distributed.torch_parallelize import build_parallelize_model
-from veomni.models import build_foundation_model, build_tokenizer
+from veomni.models import build_foundation_model
 from veomni.optim import build_lr_scheduler, build_optimizer
 from veomni.utils import helper
 from veomni.utils.arguments import DataArguments, ModelArguments, TrainingArguments, parse_args, save_args
@@ -43,6 +42,7 @@ torchrun --nnodes=1 --nproc-per-node=8 --master-port=4321 tests/utils/test_train
 torch.multiprocessing.set_sharing_strategy("file_system")
 
 logger = helper.create_logger(__name__)
+
 
 def print_device_mem_info():
     current_memory_allocated = torch.cuda.memory_allocated() / (1024**2)
@@ -73,6 +73,7 @@ def check_state_dict(lhs_dict, rhs_dict, need_flatten=False):
         lhs, rhs = lhs_dict[k], v
 
         assert torch.allclose(lhs.to_local(), rhs.to_local())
+
 
 @dataclass
 class Arguments:
@@ -112,8 +113,6 @@ def main():
     )
 
     logger.info_rank0("Prepare data")
-
-    tokenizer = build_tokenizer(args.model.tokenizer_path)
 
     train_data_size = 8192
     train_dataset = build_dummy_dataset(task_type="text", size=train_data_size, max_seq_len=args.data.max_seq_len)
@@ -195,7 +194,7 @@ def main():
         lr_start=args.train.lr_start,
     )
 
-    start_epoch, start_step, global_step, checkpoint_times = 0, 0, 0, 0
+    start_epoch, start_step, global_step = 0, 0, 0
     save_checkpoint_path = None
 
     helper.empty_cache()
@@ -235,9 +234,8 @@ def main():
 
             total_loss = 0
             torch.cuda.synchronize()
-            start_time = time.time()
-            for micro_batch in micro_batches:
 
+            for micro_batch in micro_batches:
                 micro_batch = {
                     k: v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in micro_batch.items()
                 }
@@ -263,7 +261,7 @@ def main():
             # collect mean loss across data parallel group
             total_loss, grad_norm = all_reduce((total_loss, grad_norm), group=get_parallel_state().fsdp_group)
             torch.cuda.synchronize()
-            delta_time = time.time() - start_time
+
             lr = max(lr_scheduler.get_last_lr())
 
             data_loader_tqdm.set_postfix_str(f"loss: {total_loss:.2f}, grad_norm: {grad_norm:.2f}, lr: {lr:.2e}")
@@ -271,7 +269,7 @@ def main():
 
         data_loader_tqdm.close()
         start_step = 0
-        helper.print_device_mem_info(f"VRAM usage after epoch {epoch+1}")
+        helper.print_device_mem_info(f"VRAM usage after epoch {epoch + 1}")
         # if args.train.save_epochs and (epoch + 1) % args.train.save_epochs == 0:
         # save after first epoch
         if epoch == 0:
@@ -301,8 +299,10 @@ def main():
     state = {"model": model, "optimizer": optimizer, "extra_state": {}}
     subdirs = [d for d in os.listdir(save_checkpoint_path) if d.startswith("global_step_")]
     if subdirs:
+
         def step_id(s):
             return int(s.split("_")[-1])
+
         subdir = max(subdirs, key=step_id)
         load_path = os.path.join(save_checkpoint_path, subdir)
     else:
@@ -320,7 +320,6 @@ def main():
 
     check_state_dict(golden_model_sd, model.state_dict())
     check_state_dict(golden_optim_sd, optimizer.state_dict(), need_flatten=True)
-
 
     torch.cuda.synchronize()
     # release memory
