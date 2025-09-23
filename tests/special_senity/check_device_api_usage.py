@@ -32,6 +32,7 @@ from pathlib import Path
 
 # directory or file path must contain keyword ".cuda" or "cuda"
 CUDA_KEYWORD_CHECK_WHITELIST = [
+    "veomni/utils/import_utils.py",
     "veomni/utils/device.py",
     "veomni/ops/group_gemm/utils/benchmark_utils.py",
     "veomni/utils/helper.py",
