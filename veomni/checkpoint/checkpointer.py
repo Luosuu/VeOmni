@@ -296,6 +296,8 @@ class DistributedCheckpointer(CheckpointerBase):
 
     save_model_future: Optional[Any] = None
     save_optim_future: Optional[Any] = None
+    # Dedicated process group for async saves (created on first use)
+    _async_process_group: Optional[Any] = None
 
     @classmethod
     def save(
@@ -323,6 +325,10 @@ class DistributedCheckpointer(CheckpointerBase):
             raise ValueError("Model must be provided to save a distributed checkpoint.")
 
         if save_async:
+            # Lazily create a dedicated Gloo process group for async DCP saves
+            if cls._async_process_group is None:
+                cls._async_process_group = dist.new_group(backend="gloo")
+
             if cls.save_model_future is not None:
                 logger.info_rank0("waiting for previous DCP model saving session to end...")
                 cls.save_model_future.result()
@@ -337,6 +343,7 @@ class DistributedCheckpointer(CheckpointerBase):
                     single_file_per_rank=True,
                     sync_files=False,
                 ),
+                process_group=cls._async_process_group,
             )
             if "optimizer" in state:
                 if cls.save_optim_future is not None:
@@ -353,6 +360,7 @@ class DistributedCheckpointer(CheckpointerBase):
                         single_file_per_rank=True,
                         sync_files=False,
                     ),
+                    process_group=cls._async_process_group,
                 )
         else:
             model_dir = os.path.join(checkpoint_dir, _MODEL_DIR)
