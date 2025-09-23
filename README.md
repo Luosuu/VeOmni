@@ -38,7 +38,7 @@ Our guiding principles when building VeOmni are:
 </div>
 
 ### 🔥 Latest News
-
+- [2025/09/19] We release first offical release [v0.1.0](https://github.com/ByteDance-Seed/VeOmni/pull/75) of VeOmni.
 - [2025/08/01] We release [VeOmni Tech report](https://arxiv.org/abs/2508.02317) and open the [WeChat group](./assets/wechat.png). Feel free to join us!
 - [2025/04/03] We release VeOmni!
 
@@ -100,7 +100,6 @@ Our guiding principles when building VeOmni are:
 
 ### 🧪 Upcoming Features
 
-- [ ] [veScale](https://github.com/volcengine/veScale/tree/main) FSDP
 - [ ] Torch native Tensor parallelism
 - [ ] torch.compile
 - [ ] [Flux: Fine-grained Computation-communication Overlapping GPU Kernel](https://github.com/bytedance/flux) integrations
@@ -125,13 +124,6 @@ Install from source code:
 
 ```shell
 pip3 install -e .
-```
-
-Install veScale (Not available yet)
-
-```shell
-git clone https://github.com/volcengine/veScale.git
-pip3 install .
 ```
 
 ### 🚀 Quick Start
@@ -282,7 +274,10 @@ Thanks to the following projects for their excellent work:
 - [torchtune](https://github.com/pytorch/torchtune)
 
 ## 💡 Awesome work using VeOmni
-- [UI-TARS](https://github.com/bytedance/UI-TARS)
+- [UI-TARS: Pioneering Automated GUI Interaction with Native Agents](https://github.com/bytedance/UI-TARS)
+- [OpenHA: A Series of Open-Source Hierarchical
+Agentic Models in Minecraft](https://arxiv.org/pdf/2509.13347)
+- [UI-TARS-2 Technical Report: Advancing GUI Agent with Multi-Turn Reinforcement Learning](https://arxiv.org/abs/2509.02544)
 
 ## 🎨 Contributing
 
