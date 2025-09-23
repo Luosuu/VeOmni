@@ -56,6 +56,7 @@ from ....distributed.sequence_parallel import (
     reduce_sequence_parallel_loss,
     unpad_tensor,
 )
+from ....utils.device import IS_CUDA_AVAILABLE
 from ....utils.import_utils import is_liger_kernel_available
 
 
@@ -63,7 +64,7 @@ if is_liger_kernel_available():
     from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss  # type: ignore
 
 
-if is_flash_attn_2_available() and torch.cuda.is_available():
+if is_flash_attn_2_available() and IS_CUDA_AVAILABLE:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.layers.rotary import apply_rotary_emb
     from transformers.modeling_flash_attention_utils import _flash_attention_forward
@@ -1163,7 +1164,7 @@ class Qwen2_5_VLSdpaAttention(Qwen2_5_VLAttention):
 
         # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
         # Reference: https://github.com/pytorch/pytorch/issues/112577.
-        if query_states.device.type == "cuda" and attention_mask is not None:
+        if query_states.device.type in ["cuda", "npu"] and attention_mask is not None:
             query_states = query_states.contiguous()
             key_states = key_states.contiguous()
             value_states = value_states.contiguous()
@@ -1499,7 +1500,7 @@ class Qwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
         if (
             self.config._attn_implementation == "sdpa"
             and attention_mask is not None
-            and attention_mask.device.type in ["cuda", "xpu"]
+            and attention_mask.device.type in ["cuda", "xpu", "npu"]
             and not output_attentions
         ):
             # Attend to all tokens in fully masked rows in the causal_mask, for example the relevant first rows when

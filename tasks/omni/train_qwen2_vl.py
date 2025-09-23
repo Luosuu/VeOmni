@@ -31,6 +31,12 @@ from veomni.models import build_foundation_model, build_processor, save_model_as
 from veomni.optim import build_lr_scheduler, build_optimizer
 from veomni.utils import helper
 from veomni.utils.arguments import DataArguments, ModelArguments, TrainingArguments, parse_args, save_args
+from veomni.utils.device import (
+    get_device_type,
+    get_nccl_backend,
+    get_torch_device,
+    synchronize,
+)
 from veomni.utils.dist_utils import all_reduce
 
 
@@ -139,8 +145,8 @@ def main():
     args = parse_args(Arguments)
     logger.info(f"Process rank: {args.train.global_rank}, world size: {args.train.world_size}")
     logger.info_rank0(json.dumps(asdict(args), indent=2))
-    torch.cuda.set_device(f"cuda:{args.train.local_rank}")
-    dist.init_process_group(backend="nccl")
+    get_torch_device().set_device(f"{get_device_type()}:{args.train.local_rank}")
+    dist.init_process_group(backend=get_nccl_backend())
     helper.set_seed(args.train.seed, args.train.enable_full_determinism)
     if args.train.local_rank == 0:
         helper.enable_third_party_logging()
@@ -353,13 +359,14 @@ def main():
                 helper.print_example(example=micro_batches[0], rank=args.train.local_rank)
 
             total_loss = 0
-            torch.cuda.synchronize()
+            synchronize()
             start_time = time.time()
             for micro_batch in micro_batches:
                 environ_meter.add(micro_batch)
 
                 micro_batch = {
-                    k: v.cuda(non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in micro_batch.items()
+                    k: v.to(get_device_type(), non_blocking=True) if isinstance(v, torch.Tensor) else v
+                    for k, v in micro_batch.items()
                 }
                 with model_fwd_context:
                     loss: "torch.Tensor" = model(**micro_batch, use_cache=False).loss / len(micro_batches)
@@ -383,7 +390,7 @@ def main():
 
             # collect mean loss across data parallel group
             total_loss, grad_norm = all_reduce((total_loss, grad_norm), group=get_parallel_state().fsdp_group)
-            torch.cuda.synchronize()
+            synchronize()
             delta_time = time.time() - start_time
             lr = max(lr_scheduler.get_last_lr())
             train_metrics = environ_meter.step(delta_time, global_step=global_step)
@@ -445,7 +452,7 @@ def main():
             dist.barrier()
             logger.info_rank0(f"Distributed checkpoint saved at {save_checkpoint_path} successfully!")
 
-    torch.cuda.synchronize()
+    synchronize()
     # release memory
     del optimizer, lr_scheduler
     helper.empty_cache()

@@ -369,10 +369,10 @@ class TrainingArguments:
             "help": "Enable rank0-only initialization for FSDP1 training. Note: this argument will be deprecated in the future, please use `init_device=cpu` instead."
         },
     )
-    init_device: Literal["cpu", "cuda", "meta"] = field(
+    init_device: Literal["cpu", "cuda", "meta", "npu"] = field(
         default="cuda",
         metadata={
-            "help": "Device to initialize model weights. 1. `cpu`: Init parameters on CPU in rank0 only. 2. `cuda`: Init parameters on GPU. 3. `meta`: Init parameters on meta."
+            "help": "Device to initialize model weights. 1. `cpu`: Init parameters on CPU in rank0 only. 2. `cuda`: Init parameters on GPU. 3. `meta`: Init parameters on meta. 4. `npu`: Init parameters on Ascend NPU."
         },
     )
     enable_full_determinism: bool = field(

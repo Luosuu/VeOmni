@@ -29,6 +29,12 @@ from veomni.utils.arguments import (
     parse_args,
     save_args,
 )
+from veomni.utils.device import (
+    get_device_type,
+    get_nccl_backend,
+    get_torch_device,
+    synchronize,
+)
 from veomni.utils.dist_utils import all_reduce
 from veomni.utils.dit_utils import EnvironMeter, save_model_weights
 from veomni.utils.lora_utils import add_lora_to_model, freeze_parameters
@@ -82,8 +88,8 @@ def get_param_groups(model: torch.nn.Module, default_lr: float, vit_lr: float):
 
 def main():
     args = parse_args(Arguments)
-    torch.cuda.set_device(f"cuda:{args.train.local_rank}")
-    dist.init_process_group(backend="nccl")
+    get_torch_device().set_device(f"{get_device_type()}:{args.train.local_rank}")
+    dist.init_process_group(backend=get_nccl_backend())
     helper.set_seed(args.train.seed, args.train.enable_full_determinism)
     if args.train.global_rank == 0:
         save_args(args, args.train.output_dir)
@@ -300,7 +306,7 @@ def main():
         epoch_loss = 0
         for _ in range(start_step, args.train.train_steps):
             global_step += 1
-            torch.cuda.synchronize()
+            synchronize()
             total_loss = 0
             start_time = time.time()
             try:
@@ -373,7 +379,7 @@ def main():
 
             total_loss, grad_norm = all_reduce((total_loss, grad_norm), group=get_parallel_state().fsdp_group)
             epoch_loss += total_loss
-            torch.cuda.synchronize()
+            synchronize()
             delta_time = time.time() - start_time
             lr = max(lr_scheduler.get_last_lr())
             train_metrics = environ_meter.step(delta_time, global_step=global_step)
@@ -441,7 +447,7 @@ def main():
             if args.train.global_rank == 0:
                 save_hf_weights(args, save_checkpoint_path, model_assets)
 
-    torch.cuda.synchronize()
+    synchronize()
     # release memory
     del optimizer, lr_scheduler
     helper.empty_cache()

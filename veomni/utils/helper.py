@@ -31,18 +31,24 @@ import numpy as np
 import psutil
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 import transformers
-from torch import nn
 from transformers import enable_full_determinism
 from transformers import set_seed as set_seed_func
 
 from veomni.distributed.parallel_state import get_parallel_state
 from veomni.utils import logging
 from veomni.utils.count_flops import VeomniFlopsCounter
+from veomni.utils.device import (
+    IS_CUDA_AVAILABLE,
+    IS_NPU_AVAILABLE,
+    get_device_type,
+    get_torch_device,
+)
 from veomni.utils.dist_utils import all_reduce
 from veomni.utils.seqlen_pos_transform_utils import culen2len, pos2culen
 
-from .import_utils import is_torch_npu_available, is_veomni_patch_available
+from .import_utils import is_veomni_patch_available
 from .multisource_utils import parse_multisource_config
 
 
@@ -53,9 +59,8 @@ except (ImportError, ModuleNotFoundError):
     from veomni.utils import hdfs_io
     from veomni.utils.hdfs_io import copy
 
-if is_torch_npu_available():
-    import torch_npu  # noqa: F401 # type: ignore
-    from torch_npu.contrib import transfer_to_npu  # noqa: F401 # type: ignore
+if IS_NPU_AVAILABLE:
+    import torch_npu
 
 
 if is_veomni_patch_available():
@@ -240,9 +245,9 @@ class EnvironMeter:
         self.consume_tokens += batch_tokens
 
         # cuda memory
-        allocated_memory = torch.cuda.max_memory_allocated()
-        reserved_memory = torch.cuda.max_memory_reserved()
-        num_alloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
+        allocated_memory = get_torch_device().max_memory_allocated()
+        reserved_memory = get_torch_device().max_memory_reserved()
+        num_alloc_retries = get_torch_device().memory_stats()["num_alloc_retries"]
         allocated_memory, reserved_memory, num_alloc_retries = all_reduce(
             (allocated_memory, reserved_memory, num_alloc_retries), op="max"
         )
@@ -380,8 +385,13 @@ def enable_high_precision_for_bf16():
     """
     Set high accumulation dtype for matmul and reduction.
     """
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+    if IS_CUDA_AVAILABLE:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+
+    if IS_NPU_AVAILABLE:
+        torch.npu.matmul.allow_tf32 = False
+        torch.npu.matmul.allow_bf16_reduced_precision_reduction = False
 
 
 def set_seed(seed: int, full_determinism: bool = False) -> None:
@@ -437,8 +447,8 @@ def print_device_mem_info(prompt: str = "VRAM usage") -> None:
     """
     Logs VRAM info.
     """
-    memory_allocated = torch.cuda.memory_allocated() / (1024**3)
-    max_memory_allocated = torch.cuda.max_memory_allocated() / (1024**3)
+    memory_allocated = get_torch_device().memory_allocated() / (1024**3)
+    max_memory_allocated = get_torch_device().max_memory_allocated() / (1024**3)
     logger.info_rank0(f"{prompt}: cur {memory_allocated:.2f}GB, max {max_memory_allocated:.2f}GB.")
 
 
@@ -458,8 +468,11 @@ def empty_cache() -> None:
     Collects system memory.
     """
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+
+    if IS_CUDA_AVAILABLE or IS_NPU_AVAILABLE:
+        from veomni.utils.device import empty_cache
+
+        empty_cache()
 
 
 def get_cache_dir(path: Optional[str] = None) -> str:
@@ -534,7 +547,7 @@ def dict2device(input_dict: dict):
     output_dict = {}
     for k, v in input_dict.items():
         if isinstance(v, torch.Tensor):
-            output_dict[k] = v.cuda()
+            output_dict[k] = v.to(get_device_type())
         elif isinstance(v, dict):
             output_dict[k] = dict2device(v)
         else:
@@ -567,13 +580,13 @@ class ProfilerWithMem:
 
     def stop(self):
         out = self._p.stop()
-        torch.cuda.memory._record_memory_history(enabled=None)  # step recording memory snapshot
+        get_torch_device().memory._record_memory_history(enabled=None)  # step recording memory snapshot
         return out
 
     def step(self, *a, **kw):
         out = self._p.step(*a, **kw)
         if self.first_step:
-            torch.cuda.memory._record_memory_history()
+            get_torch_device().memory._record_memory_history()
             self.first_step = False
         return out
 
@@ -585,7 +598,7 @@ def create_profiler(
     Creates a profiler to record the CPU and CUDA activities. Default export to trace.json.
     Profile steps in [start_step, end_step).
 
-    When is_torch_npu_available() = True, the profiler will be created as torch_npu.profiler.
+    When is_npu_available = True, the profiler will be created as torch_npu.profiler.
 
     Args:
         start_step (int): The step to start recording.
@@ -600,7 +613,7 @@ def create_profiler(
         time = int(datetime.datetime.now().timestamp())
 
         # torch_npu does not support export gzip trace json directly
-        trace_file_extention = "pt.trace.json" if is_torch_npu_available() else "pt.trace.json.gz"
+        trace_file_extention = "pt.trace.json" if IS_NPU_AVAILABLE else "pt.trace.json.gz"
         memory_timeline_file_extention = "html"
         gpu_memory_file_extension = "pkl"
 
@@ -621,12 +634,12 @@ def create_profiler(
 
         p.export_memory_timeline(memory_timeline_file)
         logger.info(f"Profiling memory timeline saved at {memory_timeline_file}.")
-        if torch.cuda.is_available():
-            torch.cuda.memory._dump_snapshot(gpu_memory_file)
+        if IS_CUDA_AVAILABLE or IS_NPU_AVAILABLE:
+            get_torch_device().memory._dump_snapshot(gpu_memory_file)
             logger.info(f"Profiling memory visualization saved at {gpu_memory_file}.")
 
         # In NPU, compress the trace file to .gz format ourselves.
-        if is_torch_npu_available():
+        if IS_NPU_AVAILABLE:
             gz_path = trace_file + ".gz"
             import gzip
 
@@ -651,7 +664,7 @@ def create_profiler(
             except Exception as e:
                 logger.warning(f"failed to upload trace file {trace_file}, error: {e}")
 
-    if is_torch_npu_available():
+    if IS_NPU_AVAILABLE:
         profiler_module = torch_npu.profiler
         activities = [profiler_module.ProfilerActivity.CPU, profiler_module.ProfilerActivity.NPU]
     else:
@@ -678,7 +691,7 @@ def create_profiler(
         with_modules=True,
         with_stack=with_stack,
     )
-    if torch.cuda.is_available():
+    if IS_CUDA_AVAILABLE:
         return ProfilerWithMem(base_profiler)
     else:
         return base_profiler

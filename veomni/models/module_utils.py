@@ -39,6 +39,7 @@ from transformers.utils.hub import cached_file, get_checkpoint_shard_files
 from transformers.utils.import_utils import is_safetensors_available
 
 from ..utils import logging
+from ..utils.device import synchronize
 from ..utils.helper import empty_cache, get_cache_dir, get_dtype_size
 
 
@@ -253,7 +254,7 @@ def _convert_weight_key(key: str, model: "PreTrainedModel") -> str:
 def load_model_weights(
     model: Union["nn.Module", "PreTrainedModel"],
     weights_path: str,
-    init_device: Literal["cpu", "cuda"] = "cuda",
+    init_device: Literal["cpu", "cuda", "npu"] = "cuda",
     dtensor_factory: Optional[Callable[["torch.Tensor", Any, Any], "torch.Tensor"]] = None,
 ) -> None:
     """
@@ -415,7 +416,7 @@ def save_model_weights(
 
             empty_cache()
             if global_rank is not None and dist.is_initialized():  # avoid process hanging
-                torch.cuda.synchronize()
+                synchronize()
                 dist.barrier()
 
         if global_rank is None or global_rank == 0:
