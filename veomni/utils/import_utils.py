@@ -22,8 +22,6 @@ from typing import TYPE_CHECKING, Dict
 
 from packaging import version
 
-from .device import IS_CUDA_AVAILABLE
-
 
 if TYPE_CHECKING:
     from packaging.version import Version
@@ -85,7 +83,9 @@ def is_diffusers_available() -> bool:
 
 
 def is_fused_moe_available() -> bool:
-    return IS_CUDA_AVAILABLE and _PACKAGE_FLAGS["triton"]
+    import torch
+
+    return torch.cuda.is_available() and _PACKAGE_FLAGS["triton"]
 
 
 def is_video_audio_available() -> bool:
