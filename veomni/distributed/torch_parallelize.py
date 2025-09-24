@@ -302,11 +302,11 @@ def parallelize_model_fsdp2(
         assert isinstance(modules_to_ignore_in_mixed_precision, tuple), (
             "modules_to_ignore_in_mixed_precision needs to be a tuple!"
         )
-        ignore_classes = modules_to_ignore_in_mixed_precision
+        mp_ignored_classes = modules_to_ignore_in_mixed_precision
         fsdp_kwargs_without_mp = dict(fsdp_kwargs)
         fsdp_kwargs_without_mp.pop("mp_policy", None)
     else:
-        ignore_classes = ()
+        mp_ignored_classes = ()
         fsdp_kwargs_without_mp = fsdp_kwargs
 
     # prepare ep_fsdp2 kwargs
@@ -323,10 +323,11 @@ def parallelize_model_fsdp2(
         expert_fsdp_kwargs["shard_placement_fn"] = _experts_shard_placement_fn
 
     # Here we have a basic assumption for the decoder layer hierarchy
-    # Decoder layer
-    #      | -- Attention
-    #      | -- Gating (to be ignored with mix precision)
-    #      | -- MLP (experts)
+    # Decoder Layer
+    # | -- layers that are sharded by fully_shard(decode_layer) (e.g., Attention)
+    # | -- experts layer (apply fully_shard separately in order to shard across EP groups on the same EP rank instead of sharding globally)
+    # | -- layers (declared in model.modules_to_ignore_in_mixed_precision) that need to apply fully_shard separately due to different mp policy as the decoder layer
+    #      (e.g., some models requires MoE TopK gate layer to have parameters in higher FP32 precision in forward).
     for layer_fqn, layer_mod, experts_mod in layer_pairs:
         # register all the FSDPModule inside this decoder layer for the convenience of manual prefetching configuration
         layer_mod._fsdp_modules = []
@@ -338,9 +339,9 @@ def parallelize_model_fsdp2(
                 experts_mod.set_gradient_divide_factor(parallel_state.ep_size)
             layer_mod._fsdp_modules.append(experts_mod)
         # shard module that needs to ignore mixed precision control
-        if ignore_classes:
+        if mp_ignored_classes:
             for sub_mod in layer_mod.modules():
-                if isinstance(sub_mod, ignore_classes) and sub_mod is not layer_mod:
+                if isinstance(sub_mod, mp_ignored_classes) and sub_mod is not layer_mod:
                     # this will also create a AllGather communication group
                     # when modules here are small (like gating), this would slightly impacts the peformance
                     # a better method might be adding them to ignored_params of fully_shard
@@ -356,7 +357,7 @@ def parallelize_model_fsdp2(
     fully_shard(model, **fsdp_kwargs)
 
     # configure manual prefetching when needed
-    need_manual_prefetch = parallel_state.ep_enabled or ignore_classes is not None
+    need_manual_prefetch = parallel_state.ep_enabled or mp_ignored_classes is not None
     if need_manual_prefetch:
         blocks = [pair[1] for pair in layer_pairs]
         next_blocks = blocks[1:] + [None]
