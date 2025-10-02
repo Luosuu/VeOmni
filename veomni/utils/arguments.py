@@ -499,6 +499,12 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Whether or not to record the stack traces."},
     )
+    profile_rank0_only: bool = field(
+        default=True,
+        metadata={
+            "help": "whether to profile rank0 only. When false, every rank will be profiled; Please expect many files to save, which can be slow and take a lot of disk space."
+        },
+    )
     max_steps: Optional[int] = field(
         default=None,
         metadata={"help": "Max training steps per epoch. (for debug)"},
@@ -612,6 +618,18 @@ class TrainingArguments:
         self.save_checkpoint_path = os.path.join(self.output_dir, "checkpoints")
         self.step2token_path = os.path.join(self.output_dir, "step2token.json")
         self.model_assets_dir = os.path.join(self.output_dir, "model_assets")
+
+        # determine whether to profile this rank
+        if self.enable_profiling:
+            if self.profile_rank0_only:
+                self.profile_this_rank = self.global_rank == 0
+            else:
+                logger.warning_rank0(
+                    "Profiling on ALL ranks is enabled. This would save a lot of files which takes time and space."
+                )
+                self.profile_this_rank = True
+        else:
+            self.profile_this_rank = False
 
     def compute_train_steps(
         self, max_seq_len: Optional[int] = None, train_size: Optional[int] = None, dataset_length: Optional[int] = None
