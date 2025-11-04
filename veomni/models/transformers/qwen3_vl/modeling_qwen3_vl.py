@@ -210,6 +210,7 @@ class Qwen3VLVisionAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor,
+        max_seqlen: int,
         rotary_pos_emb: Optional[torch.Tensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
@@ -231,7 +232,6 @@ class Qwen3VLVisionAttention(nn.Module):
 
         if self.config._attn_implementation == "flash_attention_2":
             # Flash Attention 2: Use cu_seqlens for variable length attention
-            max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max()
             attn_output, _ = attention_interface(
                 self,
                 query_states,
@@ -287,6 +287,7 @@ class Qwen3VLVisionBlock(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor,
+        max_seqlen: int,
         rotary_pos_emb: Optional[torch.Tensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
@@ -294,6 +295,7 @@ class Qwen3VLVisionBlock(GradientCheckpointingLayer):
         hidden_states = hidden_states + self.attn(
             self.norm1(hidden_states),
             cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
             rotary_pos_emb=rotary_pos_emb,
             position_embeddings=position_embeddings,
             **kwargs,
@@ -788,10 +790,13 @@ class Qwen3VLVisionModel(Qwen3VLPreTrainedModel):
                 cu_seqlens = torch.cat([cu_seqlens, new_cumsum.unsqueeze(0)], dim=0)
 
         deepstack_feature_lists = []
+        # Modification: calculate max_seqlen from cu_seqlens here to avoid per layer CPU-GPU sync
+        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().detach().cpu().item()
         for layer_num, blk in enumerate(self.blocks):
             hidden_states = blk(
                 hidden_states,
                 cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
