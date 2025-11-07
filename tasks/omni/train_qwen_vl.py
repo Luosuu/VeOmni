@@ -128,6 +128,7 @@ def main():
         weights_path=args.model.model_path,
         init_device=args.train.init_device,
         force_use_huggingface=args.model.force_use_huggingface,
+        moe_implementation=args.model.moe_implementation,
         attn_implementation=args.model.attn_implementation,
     )
     model_config = model.config
@@ -147,7 +148,7 @@ def main():
             position_id_func=position_id_func,
             **args.data.mm_configs,
         )
-    elif model_config.model_type == "qwen3_vl":
+    elif model_config.model_type in ("qwen3_vl", "qwen3_vl_moe"):
         transform = partial(
             process_sample_qwen3_vl,
             processor=processor,
@@ -385,10 +386,15 @@ def main():
                 total_loss += loss.item()
                 del micro_batch
 
-            if args.train.data_parallel_mode == "fsdp1":
-                grad_norm = model.clip_grad_norm_(args.train.max_grad_norm).item()
+            # Prefer model-provided clip_grad_norm_ (FSDP1 with EP, and FSDP2 with EP register one)
+            if hasattr(model, "clip_grad_norm_"):
+                _gn = model.clip_grad_norm_(args.train.max_grad_norm)
+                grad_norm = _gn.item() if hasattr(_gn, "item") else float(_gn)
             else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.train.max_grad_norm, foreach=True)
+                logger.info_rank0(
+                    "Can NOT find regitsered clip_grad_norm_ method in the model, using PyTorch default implementation.."
+                )
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.train.max_grad_norm)
 
             optimizer.step()
             lr_scheduler.step()
