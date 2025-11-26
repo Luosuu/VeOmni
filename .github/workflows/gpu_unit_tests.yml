@@ -70,6 +70,11 @@ jobs:
         run: |
           pytest -s -x tests/parallel/ulysses/test_ulysses.py
           pytest -s -x tests/parallel/ulysses/test_all_gather.py
+      - name: Run data tests
+        run: |
+          pytest -s -x tests/data/test_native_datasets.py
+          pytest -s -x tests/data/test_multisource_datasets.py
+          pytest -s -x tests/data/test_prepare_fa_kwargs.py
 
   cleanup:
     runs-on: ubuntu-latest
