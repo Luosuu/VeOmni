@@ -65,7 +65,7 @@ jobs:
             fetch-depth: 0
       - name: Install the current repository
         run: |
-          pip3 install -e .[dev]
+          pip3 install -e .[dev] --index-url https://pypi.org/simple
           pip3 install diffusers
       - name: Run parallel tests
         run: |
@@ -76,6 +76,7 @@ jobs:
           pytest -s -x tests/data
       - name: Run models tests
         run: |
+          pytest -s -x tests/models/test_model_registry.py
           pytest -s -x tests/models/test_models_patch.py
       - name: Run e2e dcp save and load test
         run: |
