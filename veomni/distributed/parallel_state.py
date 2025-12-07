@@ -339,6 +339,22 @@ class ParallelState:
     def ep_rank(self) -> int:
         return self.ep_fsdp_device_mesh.get_local_rank("ep")
 
+    @property
+    def ep_fsdp_size(self) -> int:
+        assert self.ep_enabled, "ep_fsdp_size is only available when ep is enabled (ep_size > 1)"
+        return self.fsdp_size // self.ep_size
+
+    @property
+    def ep_gradient_divide_factor(self) -> int:
+        # We assume the world size is the total dp size by now
+        # TP and PP would make this assumption not true
+        assert self.tp_size == 1
+        assert self.pp_size == 1
+        # For ep+fsdp2, the grad divide factor should alwasy be world size (no matter HSDP or not)
+        # SP does not affect this since SP groups still replicate params
+        # and their grads are all-reduced which would match grads for the same data without SP.
+        return self.world_size
+
     # ------------------------------ SP ------------------------------ #
     @property
     def sp_group(self) -> Optional["ProcessGroup"]:
