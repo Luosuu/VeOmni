@@ -35,7 +35,7 @@ jobs:
     runs-on: [self-hosted, npu-0]
     timeout-minutes: 60 # Increase this timeout value as needed
     container:
-      image: quay.io/ascend/verl:verl-8.3.rc1-910b-ubuntu22.04-py3.11-latest
+      image: quay.io/ascend/veomni:veomni-8.3.rc2-910b-ubuntu22.04-py3.11-latest
       volumes:
         - /usr/local/dcmi:/usr/local/dcmi
         - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
@@ -81,11 +81,9 @@ jobs:
         with:
           fetch-depth: 0
           clean: true
-      - name: Install uv and dependencies
-        run: pip3 install uv==0.9.8
       - name: Sync dependencies
         run: |
-          uv sync --extra npu --group dev
+          uv sync --frozen --extra npu --group dev
       - name: Check final pip list
         run: |
           uv pip list
