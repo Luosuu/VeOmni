@@ -23,6 +23,7 @@ from typing import Optional, Union
 import numpy as np
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 import torch.nn.functional as F
 import transformers.models.qwen3_vl.modeling_qwen3_vl as hf_qwen3vl
 from transformers.cache_utils import Cache
@@ -973,17 +974,13 @@ class Qwen3VLForConditionalGeneration(_Qwen3VLForConditionalGeneration):
 
 class Qwen3VLActionOutput(Qwen3VLCausalLMOutputWithPast):
     r"""
-    loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
-        Language modeling loss (for next-token prediction).
-    actions (`torch.FloatTensor` of shape `(batch_size, predict_len, action_vector_dim)`):
-        Prediction actions of each input observation sequences (batch_size).
-    past_key_values (`Cache`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
-        It is a [`~cache_utils.Cache`] instance. For more details, see our [kv cache guide](https://huggingface.co/docs/transformers/en/kv_cache).
+    Output type for ``Qwen3VLForConditionalGenerationAction``.
 
-        Contains pre-computed hidden-states (key and values in the self-attention blocks) that can be used (see
-        `past_key_values` input) to speed up sequential decoding.
-    rope_deltas (`torch.LongTensor` of shape `(batch_size, )`, *optional*):
-        The rope index difference between sequence length and multimodal rope.
+    Args:
+        loss: MSE loss between predicted and ground-truth actions.
+        actions: Predicted actions of shape ``(batch_size, pred_len, action_dim)``.
+        past_key_values: KV cache for sequential decoding.
+        rope_deltas: RoPE index deltas for multimodal position encoding.
     """
 
     loss: torch.FloatTensor | None = None
@@ -995,6 +992,62 @@ class Qwen3VLActionOutput(Qwen3VLCausalLMOutputWithPast):
 
 
 class Qwen3VLForConditionalGenerationAction(Qwen3VLForConditionalGeneration):
+    """Qwen3-VL adapted for robotic action prediction (e.g. LIBERO).
+
+    Replaces the language modelling head with:
+    - A linear *state projection* that maps the robot proprioceptive state
+      vector into a single VLM token (appended after image + text tokens).
+    - An MLP *action head* that maps the last hidden state to a sequence of
+      continuous action vectors, trained with MSE loss.
+
+    Extra config attributes consumed (can be set directly on the
+    ``Qwen3VLConfig`` instance before construction):
+        max_state_dim (int): Padded proprioceptive state dimension (default 32).
+        action_dim (int):    Per-step action vector dimension (default 7).
+        pred_len (int):      Number of future action steps to predict (default 4).
+        freeze_vlm (bool):   If True, freeze the VLM backbone and only train
+                             ``state_proj`` and ``action_head`` (default False).
+    """
+
+    _tied_weights_keys = []  # No weight tying — lm_head is removed.
+
+    def __init__(self, config):
+        # Bypass the parent __init__ which creates lm_head.
+        # Instead, replicate only what we need: model + action layers.
+        # Call grandparent (Qwen3VLPreTrainedModel) __init__ to set up config,
+        # then manually create self.model.
+        super(Qwen3VLForConditionalGeneration, self).__init__(config)
+        self.model = Qwen3VLModel(config)
+
+        # Read action-specific config (with defaults so existing Qwen3VL
+        # configs work out of the box).
+        self.max_state_dim = getattr(config, "max_state_dim", 32)
+        self.action_dim = getattr(config, "action_dim", 7)
+        self.pred_len = getattr(config, "pred_len", 4)
+        self.freeze_vlm = getattr(config, "freeze_vlm", False)
+
+        hidden_size = config.text_config.hidden_size
+
+        # State projection: (max_state_dim,) -> (hidden_size,) — one extra token
+        self.state_proj = nn.Linear(self.max_state_dim, hidden_size)
+
+        # Action head: last hidden state -> (pred_len * action_dim)
+        self.action_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, self.pred_len * self.action_dim),
+        )
+
+        self.post_init()
+
+        if self.freeze_vlm:
+            self._freeze_vlm_backbone()
+
+    def _freeze_vlm_backbone(self):
+        """Freeze everything except ``state_proj`` and ``action_head``."""
+        for param in self.model.parameters():
+            param.requires_grad = False
+
     @check_model_inputs()
     def forward(
         self,
@@ -1003,31 +1056,58 @@ class Qwen3VLForConditionalGenerationAction(Qwen3VLForConditionalGeneration):
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
+        labels: Optional[torch.FloatTensor] = None,
         pixel_values: Optional[torch.Tensor] = None,
         pixel_values_videos: Optional[torch.FloatTensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
         video_grid_thw: Optional[torch.LongTensor] = None,
+        observation_state: Optional[torch.FloatTensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        logits_to_keep: Union[int, torch.Tensor] = 0,
         **kwargs: Unpack[TransformersKwargs],
-    ) -> Union[tuple, Qwen3VLCausalLMOutputWithPast]:
+    ) -> Union[tuple, Qwen3VLActionOutput]:
         r"""
-        labels (`torch.LongTensor` of shape `(batch_size, pred_len)`, *optional*):
-            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-        image_grid_thw (`torch.LongTensor` of shape `(num_images, 3)`, *optional*):
-            The temporal, height and width of feature shape of each image in LLM.
-        video_grid_thw (`torch.LongTensor` of shape `(num_videos, 3)`, *optional*):
-            The temporal, height and width of feature shape of each video in LLM.
+        Args:
+            labels: Ground-truth actions of shape ``(batch_size, pred_len, action_dim)``.
+            observation_state: Robot proprioceptive state of shape
+                ``(batch_size, state_dim)``. Padded to ``max_state_dim`` internally
+                if ``state_dim < max_state_dim``.
 
         Returns:
-
-        Example:
-            TODO: Add example
+            :class:`Qwen3VLActionOutput` with predicted ``actions`` and optional
+            ``loss`` (when ``labels`` is provided).
         """
-        # Qwen3VLModel outputs
+        # --- State token injection ---
+        # Embed input_ids manually so we can append the state token.
+        if inputs_embeds is None:
+            inputs_embeds = self.model.get_input_embeddings()(input_ids)
+            input_ids = None  # avoid double-embedding inside self.model
+
+        if observation_state is not None:
+            # Pad state to max_state_dim if needed
+            state = observation_state
+            if state.shape[-1] < self.max_state_dim:
+                pad_size = self.max_state_dim - state.shape[-1]
+                state = F.pad(state, (0, pad_size), value=0.0)
+
+            state_emb = self.state_proj(state.to(inputs_embeds.dtype))  # (B, hidden)
+            state_emb = state_emb.unsqueeze(1)  # (B, 1, hidden)
+            inputs_embeds = torch.cat([inputs_embeds, state_emb], dim=1)
+
+            # Extend attention_mask for the appended state token
+            if attention_mask is not None:
+                state_mask = torch.ones(
+                    attention_mask.shape[0], 1,
+                    dtype=attention_mask.dtype,
+                    device=attention_mask.device,
+                )
+                attention_mask = torch.cat([attention_mask, state_mask], dim=1)
+
+            # Extend position_ids for the appended state token
+            if position_ids is not None:
+                next_pos = position_ids[:, :, -1:] + 1  # (B, 3, 1) for Qwen3VL 3D rope
+                position_ids = torch.cat([position_ids, next_pos], dim=-1)
+
+        # --- VLM forward ---
         outputs = self.model(
             input_ids=input_ids,
             pixel_values=pixel_values,
@@ -1044,21 +1124,21 @@ class Qwen3VLForConditionalGenerationAction(Qwen3VLForConditionalGeneration):
 
         hidden_states = outputs[0]
 
-        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        hidden_states = hidden_states[:, slice_indices, :]
+        # Use the last token's hidden state (the state token) for action prediction
+        last_hidden = hidden_states[:, -1, :]  # (B, hidden_size)
 
-        # Instead of producing logits with lm_head
-        # We produce action sequence via action decoder
-        # Loss is MSELoss
-        # TODO: we need to decide action decoder architecture (maybe MLP?)
+        # --- Action head ---
+        actions = self.action_head(last_hidden)  # (B, pred_len * action_dim)
+        actions = actions.reshape(-1, self.pred_len, self.action_dim)
 
-        mse_loss = None
-        actions = None
+        # --- Loss ---
+        loss = None
+        if labels is not None:
+            loss = F.mse_loss(actions, labels.to(actions.dtype))
 
         return Qwen3VLActionOutput(
-            loss=mse_loss,
-            action=actions,
+            loss=loss,
+            actions=actions,
             past_key_values=outputs.past_key_values,
             rope_deltas=outputs.rope_deltas,
         )
