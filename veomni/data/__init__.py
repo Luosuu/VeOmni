@@ -21,6 +21,12 @@ from .data_collator import (
 from .data_loader import DistributedDataloader, build_dataloader
 from .dataset import build_dataset
 from .dummy_dataset import build_dummy_dataset
+from .multimodal.data_collator import (
+    LiberoActionCollator,
+    OmniDataCollatorWithPacking,
+    OmniDataCollatorWithPadding,
+    OmniSequenceShardCollator,
+)
 from .multimodal.multimodal_chat_template import build_multimodal_chat_template
 
 
@@ -32,6 +38,10 @@ __all__ = [
     "MainCollator",
     "MakeMicroBatchCollator",
     "UnpackDataCollator",
+    "LiberoActionCollator",
+    "OmniDataCollatorWithPacking",
+    "OmniDataCollatorWithPadding",
+    "OmniSequenceShardCollator",
     "build_dataset",
     "DistributedDataloader",
 ]
