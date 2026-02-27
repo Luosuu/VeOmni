@@ -1107,6 +1107,19 @@ class Qwen3VLForConditionalGenerationAction(Qwen3VLForConditionalGeneration):
                 next_pos = position_ids[:, :, -1:] + 1  # (B, 3, 1) for Qwen3VL 3D rope
                 position_ids = torch.cat([position_ids, next_pos], dim=-1)
 
+            # Update cu_seq_lens for the extra state token per subsequence.
+            # Each packed subsequence grew by 1, so shift boundaries cumulatively.
+            if "cu_seq_lens_q" in kwargs:
+                cu_q = kwargs["cu_seq_lens_q"]
+                # cu_q has shape (num_subseqs + 1,) with cu_q[0]=0.
+                # Each subsequence i (for i>=1) boundary shifts by +i.
+                offsets = torch.arange(len(cu_q), device=cu_q.device, dtype=cu_q.dtype)
+                kwargs["cu_seq_lens_q"] = cu_q + offsets
+                kwargs["cu_seq_lens_k"] = kwargs["cu_seq_lens_q"]
+                # Update max_length to account for the extra token
+                kwargs["max_length_q"] = kwargs["max_length_q"] + 1
+                kwargs["max_length_k"] = kwargs["max_length_k"] + 1
+
         # --- VLM forward ---
         outputs = self.model(
             input_ids=input_ids,
@@ -1124,8 +1137,16 @@ class Qwen3VLForConditionalGenerationAction(Qwen3VLForConditionalGeneration):
 
         hidden_states = outputs[0]
 
-        # Use the last token's hidden state (the state token) for action prediction
-        last_hidden = hidden_states[:, -1, :]  # (B, hidden_size)
+        # Use the last token's hidden state (the state token) for action prediction.
+        # For packed sequences (B=1, multiple subsequences), extract the last
+        # token of each subsequence using the updated cu_seq_lens.
+        if "cu_seq_lens_q" in kwargs:
+            cu_q = kwargs["cu_seq_lens_q"]
+            # Last token indices of each subsequence: cu_q[1:] - 1
+            last_indices = cu_q[1:] - 1  # (num_samples,)
+            last_hidden = hidden_states[0, last_indices, :]  # (N, hidden_size)
+        else:
+            last_hidden = hidden_states[:, -1, :]  # (B, hidden_size)
 
         # --- Action head ---
         actions = self.action_head(last_hidden)  # (B, pred_len * action_dim)

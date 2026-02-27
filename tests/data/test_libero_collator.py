@@ -1,9 +1,9 @@
-"""Tests for LiberoActionCollator."""
+"""Tests for LiberoActionCollator and LiberoActionPackingCollator."""
 
 import pytest
 import torch
 
-from veomni.data.multimodal.data_collator import LiberoActionCollator
+from veomni.data.multimodal.data_collator import LiberoActionCollator, LiberoActionPackingCollator
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +157,103 @@ class TestLiberoActionCollator:
     def test_dtypes_preserved(self, two_samples):
         """Output dtypes should match expected types."""
         collator = LiberoActionCollator()
+        batch = collator(two_samples)
+        assert batch["input_ids"].dtype == torch.long
+        assert batch["attention_mask"].dtype == torch.long
+        assert batch["image_mask"].dtype == torch.bool
+        assert batch["observation_state"].dtype == torch.float32
+        assert batch["labels"].dtype == torch.float32
+
+
+# ---------------------------------------------------------------------------
+# Packing collator tests
+# ---------------------------------------------------------------------------
+
+class TestLiberoActionPackingCollator:
+
+    def test_output_keys(self, two_samples):
+        collator = LiberoActionPackingCollator()
+        batch = collator(two_samples)
+        expected_keys = {
+            "input_ids", "attention_mask", "position_ids",
+            "image_mask", "video_mask",
+            "pixel_values", "image_grid_thw",
+            "observation_state", "labels",
+        }
+        assert expected_keys == set(batch.keys())
+
+    def test_packing_features_shape(self, two_samples):
+        """Packed sequence features should have shape (1, packed_len)."""
+        collator = LiberoActionPackingCollator()
+        batch = collator(two_samples)
+        packed_len = 10 + 14  # sum of seq_lens
+
+        assert batch["input_ids"].shape == (1, packed_len)
+        assert batch["attention_mask"].shape == (1, packed_len)
+        assert batch["image_mask"].shape == (1, packed_len)
+        assert batch["video_mask"].shape == (1, packed_len)
+        # position_ids: (1, 3, packed_len) for 3D rope
+        assert batch["position_ids"].shape == (1, 3, packed_len)
+
+    def test_packed_length_equals_sum(self, three_samples):
+        """Total packed length should equal sum of individual sample lengths."""
+        collator = LiberoActionPackingCollator()
+        batch = collator(three_samples)
+        total_len = sum(s["input_ids"].shape[0] for s in three_samples)
+        assert batch["input_ids"].shape == (1, total_len)
+
+    def test_position_ids_concatenated(self, two_samples):
+        """Each subsequence in position_ids should start at 0."""
+        collator = LiberoActionPackingCollator()
+        batch = collator(two_samples)
+        pos = batch["position_ids"][0, 0, :]  # first rope dim
+        # First subsequence starts at 0
+        assert pos[0].item() == 0
+        # Second subsequence starts at 0 (at offset 10)
+        assert pos[10].item() == 0
+
+    def test_concat_features(self, two_samples):
+        """pixel_values and image_grid_thw should be concatenated along dim 0."""
+        collator = LiberoActionPackingCollator()
+        batch = collator(two_samples)
+        assert batch["pixel_values"].shape[0] == 4 + 6
+        assert batch["image_grid_thw"].shape == (2, 3)
+
+    def test_stack_features_shape(self, two_samples):
+        """observation_state and labels should be stacked (N, ...)."""
+        collator = LiberoActionPackingCollator()
+        batch = collator(two_samples)
+        assert batch["observation_state"].shape == (2, 8)
+        assert batch["labels"].shape == (2, 4, 7)
+
+    def test_stack_features_values(self, two_samples):
+        """Stacked values should preserve original tensor content."""
+        collator = LiberoActionPackingCollator()
+        batch = collator(two_samples)
+        assert torch.equal(batch["observation_state"][0], two_samples[0]["observation_state"])
+        assert torch.equal(batch["observation_state"][1], two_samples[1]["observation_state"])
+        assert torch.equal(batch["labels"][0], two_samples[0]["labels"])
+        assert torch.equal(batch["labels"][1], two_samples[1]["labels"])
+
+    def test_single_sample(self):
+        """Batch of 1 should produce (1, seq_len) packed output."""
+        s = _make_sample(seq_len=12, state_dim=8, pred_len=4, action_dim=7, seed=42)
+        collator = LiberoActionPackingCollator()
+        batch = collator([s])
+        assert batch["input_ids"].shape == (1, 12)
+        assert batch["observation_state"].shape == (1, 8)
+        assert batch["labels"].shape == (1, 4, 7)
+
+    def test_packing_content_preserved(self, two_samples):
+        """Packed input_ids should be the concatenation of individual samples."""
+        collator = LiberoActionPackingCollator()
+        batch = collator(two_samples)
+        expected = torch.cat([two_samples[0]["input_ids"], two_samples[1]["input_ids"]], dim=0)
+        assert torch.equal(batch["input_ids"][0], expected)
+
+    def test_dtypes_preserved(self, two_samples):
+        """Output dtypes should match expected types."""
+        collator = LiberoActionPackingCollator()
         batch = collator(two_samples)
         assert batch["input_ids"].dtype == torch.long
         assert batch["attention_mask"].dtype == torch.long
