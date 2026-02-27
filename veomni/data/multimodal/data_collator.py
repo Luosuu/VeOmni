@@ -287,6 +287,69 @@ class LiberoActionCollator(DataCollator):
 
 
 @dataclass
+class LiberoActionPackingCollator(DataCollator):
+    """Data collator for LIBERO with sequence packing (rmpad).
+
+    Packs multiple LIBERO samples into a single sequence for efficient
+    flash-attention via ``flash_attn_varlen_func``.
+
+    - **Packing features** (cat along last dim, unsqueeze to ``(1, packed_len)``):
+      ``input_ids``, ``attention_mask``, ``position_ids``, ``image_mask``, ``video_mask``
+    - **Concat features** (cat along dim 0):
+      ``pixel_values``, ``pixel_values_videos``, ``image_grid_thw``, ``video_grid_thw``
+    - **Stack features** (``torch.stack`` → ``(N, ...)``):
+      ``observation_state``, ``labels``
+    """
+
+    packing_features: List = field(
+        default_factory=lambda: [
+            "input_ids",
+            "attention_mask",
+            "position_ids",
+            "image_mask",
+            "video_mask",
+        ],
+        metadata={"help": "features to pack (cat along last dim then unsqueeze)."},
+    )
+
+    concat_features: List = field(
+        default_factory=lambda: [
+            "pixel_values",
+            "pixel_values_videos",
+            "image_grid_thw",
+            "video_grid_thw",
+        ],
+        metadata={"help": "features to concat along dim 0."},
+    )
+
+    stack_features: List = field(
+        default_factory=lambda: [
+            "observation_state",
+            "labels",
+        ],
+        metadata={"help": "features to stack (uniform shape across samples)."},
+    )
+
+    def __call__(self, features: Sequence[Dict[str, "torch.Tensor"]]) -> Dict[str, "torch.Tensor"]:
+        batch = {}
+        keys = {key for feature in features for key in feature.keys()}
+        for input_name in keys:
+            tensors = [feature[input_name] for feature in features if input_name in feature]
+            if input_name in self.packing_features:
+                batch[input_name] = torch.cat(tensors, dim=-1).unsqueeze(0)
+            elif input_name in self.concat_features:
+                batch[input_name] = torch.cat(tensors, dim=0)
+            elif input_name in self.stack_features:
+                batch[input_name] = torch.stack(tensors, dim=0)
+            elif input_name.split("_")[0] in MODALITY:
+                batch[input_name] = torch.cat(tensors, dim=0)
+            else:
+                batch[input_name] = default_collate(tensors)
+
+        return batch
+
+
+@dataclass
 class OmniDataCollatorWithPacking(DataCollator):
     """
     Data collator to packing for omni dataset.

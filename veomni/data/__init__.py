@@ -23,6 +23,7 @@ from .dataset import build_dataset
 from .dummy_dataset import build_dummy_dataset
 from .multimodal.data_collator import (
     LiberoActionCollator,
+    LiberoActionPackingCollator,
     OmniDataCollatorWithPacking,
     OmniDataCollatorWithPadding,
     OmniSequenceShardCollator,
@@ -39,6 +40,7 @@ __all__ = [
     "MakeMicroBatchCollator",
     "UnpackDataCollator",
     "LiberoActionCollator",
+    "LiberoActionPackingCollator",
     "OmniDataCollatorWithPacking",
     "OmniDataCollatorWithPadding",
     "OmniSequenceShardCollator",
