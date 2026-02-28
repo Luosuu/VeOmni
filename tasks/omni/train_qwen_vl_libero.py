@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 import wandb
 from tqdm import trange
+from youmu.libero_dataset import LiberoYoumuDataset
 
 from tasks.data.vlm_data_process import (
     load_libero_task_descriptions,
@@ -20,8 +21,8 @@ from veomni.data import (
     LiberoActionCollator,
     LiberoActionPackingCollator,
     build_dataloader,
-    build_dataset,
 )
+from veomni.data.dataset import MappingDataset
 from veomni.distributed.clip_grad_norm import veomni_clip_grad_norm
 from veomni.distributed.offloading import build_activation_offloading_context
 from veomni.distributed.parallel_state import get_parallel_state, init_parallel_state
@@ -83,6 +84,18 @@ class MyDataArguments(DataArguments):
     libero_prompt_template: str = field(
         default="Predict the next actions for the robot task: {task}",
         metadata={"help": "Prompt template for LIBERO task descriptions. Must contain {task}."},
+    )
+    obs_len: int = field(
+        default=1,
+        metadata={"help": "Number of observation frames (including anchor)."},
+    )
+    pred_len: int = field(
+        default=4,
+        metadata={"help": "Number of future prediction frames."},
+    )
+    chunk_index: int = field(
+        default=0,
+        metadata={"help": "Chunk index for multi-chunk datasets."},
     )
 
 
@@ -166,16 +179,14 @@ def main():
     if args.train.rmpad:
         raise ValueError("QwenVL does not support rmpad. Use `rmpad_with_pos_ids` instead.")
 
-    train_dataset = build_dataset(
-        dataset_name=args.data.dataset_name,
-        transform=transform,
-        dataloader_batch_size=args.train.dataloader_batch_size,
-        seed=args.train.seed,
-        **asdict(args.data),
+    libero_dataset = LiberoYoumuDataset(
+        data_dir=args.data.libero_data_dir,
+        obs_len=args.data.obs_len,
+        pred_len=args.data.pred_len,
+        chunk_index=args.data.chunk_index,
     )
-    dataset_length = None if not hasattr(train_dataset, "__len__") else len(train_dataset)
-    if args.data.datasets_type == "mapping":
-        dataset_length = dataset_length / args.train.data_parallel_size
+    train_dataset = MappingDataset(data=libero_dataset, transform=transform)
+    dataset_length = len(train_dataset) / args.train.data_parallel_size
     args.train.compute_train_steps(args.data.max_seq_len, args.data.train_size, dataset_length)
 
     train_dataloader = build_dataloader(
