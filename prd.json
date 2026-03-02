@@ -99,7 +99,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "This is a validation-only story. No code changes expected — just run all tests and confirm green. If anything fails, go back and fix in the relevant story."
     }
   ]

@@ -99,3 +99,17 @@
   - The module-scoped `_load_data_transform` mock fixture works well — it uses `importlib.util.spec_from_file_location` with mocked heavy deps (torch, veomni.*) and doesn't interfere with the synthetic_libero_dir session-scoped fixture from conftest.py
   - Synthetic tests can use the same `dt_module` fixture pattern since it only needs the data_transform module, not the full veomni stack
 ---
+
+## 2026-03-02 - US-006
+- Full validation run: all 4 LIBERO test files green, 0 skips
+  - test_youmu_lerobot_parity.py: 12 passed
+  - test_libero_dataset_episode_per_file.py: 20 passed
+  - test_libero_task_descriptions.py: 15 passed
+  - test_libero_metadata_jsonl.py: 8 passed
+- Total: 55 tests passed, 0 skipped, 0 failures
+- No code changes needed — validation only
+- Files changed: `prd.json`, `progress.txt`
+- **Learnings for future iterations:**
+  - All LIBERO tests are now fully operational with real data mounts and synthetic fixtures
+  - No missing import warnings for av, huggingface_hub, lerobot, or youmu
+---
