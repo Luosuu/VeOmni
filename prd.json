@@ -68,7 +68,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "Synthetic tests may have different expected shapes if the fixture uses different state/action dimensions — use the same dims (8 for state, 7 for actions) in the fixture."
     },
     {
