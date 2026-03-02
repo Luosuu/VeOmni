@@ -29,10 +29,6 @@ from typing import TYPE_CHECKING, Any, Callable, Dict
 import torch
 
 from ...utils.constants import AUDIO_INPUT_INDEX, IGNORE_INDEX, IMAGE_INPUT_INDEX, VIDEO_INPUT_INDEX
-from . import conv_preprocess
-from .audio_utils import fetch_audios
-from .image_utils import fetch_images
-from .video_utils import fetch_videos, fetch_videos_metadata
 
 
 if TYPE_CHECKING:
@@ -51,6 +47,9 @@ def process_sample_qwen2_5_vl(
     """
     Processes multimodal example with qwen2_5_vl's pre-processor.
     """
+    from . import conv_preprocess
+    from .image_utils import fetch_images
+    from .video_utils import fetch_videos
 
     source = (
         kwargs["source_name"] if "source_name" in kwargs else sample["source_name"]
@@ -110,6 +109,9 @@ def process_sample_qwen3_vl(
     """
     Processes a multimodal example using the Qwen3-VL pre-processor.
     """
+    from . import conv_preprocess
+    from .image_utils import fetch_images
+    from .video_utils import fetch_videos_metadata
 
     source = (
         kwargs["source_name"] if "source_name" in kwargs else sample["source_name"]
@@ -393,6 +395,11 @@ def _process_sample_omni(
     Token IDs for image/video/audio placeholders are passed explicitly to support
     different tokenizer vocabs across model versions.
     """
+    from . import conv_preprocess
+    from .audio_utils import fetch_audios
+    from .image_utils import fetch_images
+    from .video_utils import fetch_videos
+
     source = (
         kwargs["source_name"] if "source_name" in kwargs else sample["source_name"]
     )  # source_name if use multisource_dataset
