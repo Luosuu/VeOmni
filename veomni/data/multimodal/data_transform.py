@@ -181,6 +181,7 @@ def process_sample_qwen3_vl(
 # LIBERO robotic action prediction transform for Qwen3-VL
 # ---------------------------------------------------------------------------
 
+
 def process_libero_sample_qwen3_vl(
     sample: Dict[str, Any],
     processor: "ProcessorMixin",
@@ -219,11 +220,12 @@ def process_libero_sample_qwen3_vl(
     images_tensor = sample["observation.images.image"]  # (obs_len, H, W, 3)
     obs_image = images_tensor[obs_index].numpy()  # (H, W, 3) uint8 ndarray
     from PIL import Image as PILImage
+
     pil_image = PILImage.fromarray(obs_image)
 
     image_inputs = processor.image_processor(images=[pil_image], return_tensors="pt")
     image_grid_thw = image_inputs["image_grid_thw"]  # (1, 3)
-    merge_length = processor.image_processor.merge_size ** 2
+    merge_length = processor.image_processor.merge_size**2
     image_token_num = image_grid_thw.prod(dim=-1) // merge_length  # (1,)
 
     # --- Text tokenization ---
@@ -280,9 +282,30 @@ def process_libero_sample_qwen3_vl(
 def load_libero_task_descriptions(meta_path: str) -> Dict[int, str]:
     """Load episode_index → task description mapping from LIBERO metadata.
 
+    Supports two formats:
+    - **Parquet**: ``meta/episodes/chunk-000/file-000.parquet`` with columns
+      ``episode_index`` and ``tasks`` (list of strings).
+    - **JSONL**: ``meta/episodes.jsonl`` with one JSON object per line
+      containing ``episode_index`` (int) and ``tasks`` (list of strings).
+
+    The format is auto-detected from the file extension.
+
     Args:
-        meta_path: Path to the LIBERO episode metadata parquet file
-            (e.g. ``<data_dir>/meta/episodes/chunk-000/file-000.parquet``).
+        meta_path: Path to the LIBERO episode metadata file (parquet or JSONL).
+
+    Returns:
+        Dict mapping ``episode_index`` to the first task description string.
+    """
+    if meta_path.endswith(".jsonl"):
+        return _load_libero_task_descriptions_jsonl(meta_path)
+    return _load_libero_task_descriptions_parquet(meta_path)
+
+
+def _load_libero_task_descriptions_parquet(meta_path: str) -> Dict[int, str]:
+    """Load task descriptions from a parquet episode metadata file.
+
+    Args:
+        meta_path: Path to the parquet file with ``episode_index`` and ``tasks`` columns.
 
     Returns:
         Dict mapping ``episode_index`` to the first task description string.
@@ -296,6 +319,34 @@ def load_libero_task_descriptions(meta_path: str) -> Dict[int, str]:
         tasks_list = table["tasks"][i].as_py()
         # Each episode has a list of task strings; take the first one.
         task_map[ep_idx] = tasks_list[0] if tasks_list else "perform the task"
+    return task_map
+
+
+def _load_libero_task_descriptions_jsonl(meta_path: str) -> Dict[int, str]:
+    """Load task descriptions from a JSONL episode metadata file.
+
+    Each line is a JSON object with ``episode_index`` (int) and ``tasks``
+    (list of strings).  Falls back to ``"perform the task"`` if ``tasks``
+    is missing or empty.
+
+    Args:
+        meta_path: Path to the JSONL file (e.g. ``meta/episodes.jsonl``).
+
+    Returns:
+        Dict mapping ``episode_index`` to the first task description string.
+    """
+    import json
+
+    task_map: Dict[int, str] = {}
+    with open(meta_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            ep_idx = record["episode_index"]
+            tasks_list = record.get("tasks", [])
+            task_map[ep_idx] = tasks_list[0] if tasks_list else "perform the task"
     return task_map
 
 

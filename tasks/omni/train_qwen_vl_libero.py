@@ -246,11 +246,14 @@ def main():
     processor = build_processor(args.model.tokenizer_path)
     position_id_func = model.get_position_id_func()
 
-    # Load LIBERO task descriptions
+    # Load LIBERO task descriptions — auto-detect parquet or JSONL metadata
     libero_dir = args.data.libero_data_dir
-    meta_candidate1 = os.path.join(libero_dir, "meta", "episodes", "episodes.parquet")
-    meta_candidate2 = os.path.join(libero_dir, "meta", "episodes", "chunk-000", "file-000.parquet")
-    meta_path = meta_candidate1 if os.path.exists(meta_candidate1) else meta_candidate2
+    meta_candidates = [
+        os.path.join(libero_dir, "meta", "episodes.jsonl"),
+        os.path.join(libero_dir, "meta", "episodes", "episodes.parquet"),
+        os.path.join(libero_dir, "meta", "episodes", "chunk-000", "file-000.parquet"),
+    ]
+    meta_path = next((p for p in meta_candidates if os.path.exists(p)), meta_candidates[-1])
     task_descriptions = load_libero_task_descriptions(meta_path)
     logger.info_rank0(f"Loaded {len(task_descriptions)} LIBERO task descriptions from {meta_path}")
 
