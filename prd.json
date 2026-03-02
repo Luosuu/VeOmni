@@ -19,7 +19,7 @@
         "python -m py_compile submodules/youmu/python/youmu/libero_dataset.py passes"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "notes": "Keep state_column, action_column, image_column constructor params — still needed for _find_physical_column_index. The smoke test error message should say: 'Rust parquet reader failed on {test_file}: {error}. Ensure parquet files are written with use_dictionary=False.'"
     },
     {
