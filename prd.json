@@ -49,8 +49,8 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": "Requires both data dirs and both backends (youmu Rust + lerobot+av). build_libero_dataset loaded via importlib from tasks/omni/train_qwen_vl_libero.py."
+      "passes": true,
+      "notes": "Requires both data dirs and both backends (youmu Rust + lerobot+av). Test creates a temporary v3.0-compatible directory to bridge v2.0 dataset format with lerobot 0.4.4. Key mappings: youmu observation.state→lerobot state, youmu action→lerobot actions, youmu observation.images.image→lerobot image. Youmu action timestamps start at t+1 (next frame), not t+0."
     },
     {
       "id": "US-004",
