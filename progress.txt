@@ -12,3 +12,17 @@
 - ruff-format pre-commit hook reformats files automatically; re-stage after first commit attempt fails due to formatting.
 
 ---
+
+## 2026-03-02 - US-001
+- Removed PyArrow fallback from LiberoYoumuDataset, enforcing Rust-only backend
+- Removed: `_HAS_RUST` flag, `_use_rust` instance variable, `_pf_cache` dict, `_get_pf()` method, all PyArrow read branches
+- Removed: `column_name` parameter from `_read_list_column_range()`, `_state_column`/`_action_column`/`_image_column` instance variables
+- Added: fail-fast RuntimeError in constructor smoke test with helpful error message
+- Simplified `__getstate__`/`__setstate__` to only handle Rust cache
+- Updated all docstrings to reflect Rust-only operation
+- Files changed: `submodules/youmu/python/youmu/libero_dataset.py`
+- **Learnings for future iterations:**
+  - `state_column`, `action_column`, `image_column` constructor params are still needed for `_find_physical_column_index` — only the private `_state_column`/`_action_column`/`_image_column` copies were redundant
+  - prd.json and progress.txt lived on the previous branch (`ralph/fix-skipped-tests`) and needed to be brought to the new branch
+  - The submodule commit workflow: commit inside submodule dir first, then `git add submodules/youmu` in parent
+---
