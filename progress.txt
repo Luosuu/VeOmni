@@ -15,5 +15,33 @@
 - Synthetic test parquet files can be created with PyArrow `FixedSizeListArray.from_arrays` and `StructArray.from_arrays`.
 - Use plain/non-dict-encoded columns in synthetic parquets to avoid Rust reader panics.
 - ruff-format pre-commit hook reformats files automatically; always re-stage after first commit attempt fails due to formatting.
+- Synthetic parquet files must use `write_page_index=True` for the youmu Rust reader's offset index requirement.
 
+---
+
+## 2026-03-02 - US-001
+- Implemented session-scoped `synthetic_libero_dir` fixture in `tests/data/conftest.py`
+- Creates 3 episodes (5, 7, 10 rows) in `data/chunk-000/` with matching `meta/episodes.jsonl`
+- Schema: state (fixed_size_list<float32>[8]), actions (fixed_size_list<float32>[7]), image (struct<bytes,path>)
+- Uses seeded RNG (seed=42) for deterministic data, plain encoding, write_page_index=True
+- Files changed: `tests/data/conftest.py` (new)
+- **Learnings for future iterations:**
+  - `write_page_index=True` is required when writing parquet files for youmu Rust reader — without it, `read_list_row_range_py` raises "Offset index not available"
+  - `ParquetReaderCachePy()` takes no constructor args — it's a cache object passed as `cache=` kwarg to read functions
+  - `use_dictionary=False` prevents dict-encoding that causes Rust reader panics
+  - The `--timeout` pytest flag is not available in this env (no pytest-timeout plugin)
+  - `test_classification_data_processor.py` fails due to huggingface-hub version mismatch — unrelated to LIBERO tests
+- No type checker (pyright/mypy) is installed; use `python -m py_compile` for basic compile checks.
+- TestBackendParity tests error with `huggingface-hub>=0.34.0,<1.0` version constraint from transformers — need to address in US-003.
+---
+
+## 2026-03-02 - US-002
+- All 7 TestRawParquetParity tests pass out of the box — no code changes needed
+- Tests verified: test_same_number_of_files, test_same_row_counts, test_state_data_identical, test_actions_data_identical, test_image_bytes_identical, test_metadata_episode_count_matches, test_metadata_episode_lengths_match
+- The skip conditions (`skip_no_youmu_data`, `skip_no_lerobot_data`) correctly evaluate to not-skipped since both data dirs exist
+- Files changed: prd.json (passes: true), progress.txt
+- **Learnings for future iterations:**
+  - Both `/mnt/local/localcache00/libero` and `libero_64KB` data directories exist and are accessible
+  - The 64KB re-encoding preserves data exactly (state, actions, image bytes, metadata all identical)
+  - TestBackendParity tests fail at import time due to transformers version constraint on huggingface-hub — separate from raw parquet parity
 ---

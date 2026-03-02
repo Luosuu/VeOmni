@@ -17,7 +17,7 @@
         "Typecheck passes"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "notes": "Use plain/non-dict-encoded columns to avoid Rust reader panics. Use pyarrow.FixedSizeListArray.from_arrays and pyarrow.StructArray.from_arrays for schema construction."
     },
     {
@@ -31,7 +31,7 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "These tests use PyArrow directly (no youmu/lerobot dependency). They only need the two data directories to exist. Skip conditions should now evaluate to not-skipped."
     },
     {
