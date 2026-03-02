@@ -1,88 +1,106 @@
 {
   "project": "VeOmni",
-  "branchName": "ralph/youmu-libero-e2e",
-  "description": "Adapt LiberoYoumuDataset for actual LIBERO dataset format (episode-per-file, JSONL metadata, flat column names), verify exact parity with LeRobot, and run e2e training",
+  "branchName": "ralph/fix-skipped-tests",
+  "description": "Fix all previously-skipped LIBERO tests now that av, huggingface_hub, and youmu Rust extension are available, and add synthetic dataset fixtures for CI",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Adapt metadata loading for JSONL format",
-      "description": "As a developer, I need load_episode_metadata to load episode metadata from meta/episodes.jsonl (JSONL format) since the actual LIBERO dataset does not have meta/episodes/chunk-000/file-000.parquet. The function should auto-detect which format is present.",
+      "title": "Add synthetic LIBERO dataset fixture in conftest",
+      "description": "As a developer, I want a shared pytest fixture that generates a minimal synthetic LIBERO dataset in a temp directory so integration tests can run without the real /mnt/local/localcache00/ mount.",
       "acceptanceCriteria": [
-        "New function load_episode_metadata_jsonl in libero_utils.py reads meta/episodes.jsonl and returns list[EpisodeDescriptor]",
-        "For episode-per-file layout, file_index equals episode_index (each file = one episode)",
-        "start_frame and end_frame computed by accumulating episode lengths sorted by episode_index",
-        "Works for multi-chunk datasets (chunk-000 has episodes 0-999, chunk-001 has 1000-1692)",
-        "Update load_episode_metadata to auto-detect: try parquet path first, fall back to JSONL",
-        "Unit test verifies correct EpisodeDescriptor values for a small JSONL fixture",
-        "cargo check passes"
+        "Create tests/data/conftest.py with a session-scoped fixture 'synthetic_libero_dir' that creates a temp directory with episode-per-file layout",
+        "Fixture creates data/chunk-000/ with 3 small episode parquet files (episode_000000.parquet through episode_000002.parquet)",
+        "Fixture creates meta/episodes.jsonl with matching metadata (episode_index, tasks, length)",
+        "Parquet files use correct schema: state (fixed_size_list<float>[8]), actions (fixed_size_list<float>[7]), image (struct<bytes: binary, path: string>)",
+        "Each episode parquet has 5-10 rows with deterministic data (seeded random)",
+        "Parquet files are readable by both PyArrow and the youmu Rust ParquetReaderCachePy",
+        "Typecheck passes"
       ],
       "priority": 1,
-      "passes": true,
-      "notes": "JSONL format: {\"episode_index\": 0, \"tasks\": [\"...\"], \"length\": 214} per line. No data/file_index or dataset_from_index fields — these must be derived."
+      "passes": false,
+      "notes": "Use plain/non-dict-encoded columns to avoid Rust reader panics. Use pyarrow.FixedSizeListArray.from_arrays and pyarrow.StructArray.from_arrays for schema construction."
     },
     {
       "id": "US-002",
-      "title": "Adapt LiberoYoumuDataset for episode-per-file layout and flat column names",
-      "description": "As a developer, I need LiberoYoumuDataset to work with the actual LIBERO dataset where each episode is a separate file (episode_XXXXXX.parquet) with flat column names (state, actions, image) instead of the LeRobot layout (file-NNN.parquet with dotted names like observation.state).",
+      "title": "Run and fix raw parquet parity tests",
+      "description": "As a developer, I want the 7 TestRawParquetParity tests in test_youmu_lerobot_parity.py to pass so I can confirm libero and libero_64KB are byte-identical at the parquet level.",
       "acceptanceCriteria": [
-        "_load_chunk auto-detects file naming: episode_XXXXXX.parquet vs file-NNN.parquet",
-        "For episode-per-file layout, episode-to-file mapping is direct: episode N maps to episode_{N:06d}.parquet with row_offset=0",
-        "Constructor defaults updated: state_column='state', action_column='actions', image_column='image'",
-        "Output dict keys remain 'observation.state', 'action', 'observation.images.image', 'episode_index', 'frame_index' regardless of underlying column names",
-        "Image struct extraction still works: image column is struct<bytes: binary, path: string>, extract bytes child",
-        "Unit test: construct dataset on real data at /mnt/local/localcache00/libero_64KB, call __getitem__(0) and verify output shapes and dtypes",
-        "cargo check passes"
+        "All 7 raw parquet tests pass: test_same_number_of_files, test_same_row_counts, test_state_data_identical, test_actions_data_identical, test_image_bytes_identical, test_metadata_episode_count_matches, test_metadata_episode_lengths_match",
+        "If any test fails, diagnose whether it's a data issue or test logic issue and fix accordingly",
+        "All existing unit tests in the same file still pass",
+        "Typecheck passes"
       ],
       "priority": 2,
-      "passes": true,
-      "notes": "Dataset schema: image: struct<bytes,path>, wrist_image: struct<bytes,path>, state: fixed_size_list<float>[8], actions: fixed_size_list<float>[7], timestamp: float, frame_index: int64, episode_index: int64, index: int64, task_index: int64. 1693 episodes across 2 chunks (1000 + 693). Each file has ~3 row groups with ~100 rows."
+      "passes": false,
+      "notes": "These tests use PyArrow directly (no youmu/lerobot dependency). They only need the two data directories to exist. Skip conditions should now evaluate to not-skipped."
     },
     {
       "id": "US-003",
-      "title": "Adapt task description loading for JSONL metadata",
-      "description": "As a developer, I need load_libero_task_descriptions (in veomni/data/multimodal/data_transform.py) to load task descriptions from meta/episodes.jsonl since the actual dataset uses JSONL, not parquet episode metadata.",
+      "title": "Run and fix backend parity tests (youmu vs LeRobot)",
+      "description": "As a developer, I want the 5 TestBackendParity tests in test_youmu_lerobot_parity.py to pass so I can verify youmu and LeRobot produce identical outputs for the same LIBERO dataset.",
       "acceptanceCriteria": [
-        "load_libero_task_descriptions accepts a path to episodes.jsonl and reads episode_index + tasks[0] per line",
-        "Returns dict[int, str] mapping episode_index to task description string",
-        "Falls back to 'perform the task' if tasks field is missing or empty",
-        "Training script (train_qwen_vl_libero.py) metadata path resolution updated: checks for meta/episodes.jsonl in addition to existing parquet candidates",
-        "Unit test verifies correct loading from a small JSONL fixture",
+        "test_dataset_lengths_match passes — both backends produce same total anchor frames",
+        "test_state_parity passes — observation.state tensors are byte-identical for boundary + random indices",
+        "test_action_parity passes — action tensors are exactly equal (torch.equal)",
+        "test_image_parity passes — observation.images.image tensors are pixel-perfect identical",
+        "test_episode_index_parity passes — episode_index scalar values match",
+        "If any test fails, root-cause and fix the underlying code (youmu dataset, lerobot adapter, or test itself)",
+        "All existing unit tests still pass",
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": true,
-      "notes": "Current code in train_qwen_vl_libero.py checks meta/episodes/episodes.parquet and meta/episodes/chunk-000/file-000.parquet — neither exists. Must add meta/episodes.jsonl as a candidate."
+      "passes": false,
+      "notes": "Requires both data dirs and both backends (youmu Rust + lerobot+av). build_libero_dataset loaded via importlib from tasks/omni/train_qwen_vl_libero.py."
     },
     {
       "id": "US-004",
-      "title": "Exact numerical parity test (youmu vs LeRobot)",
-      "description": "As a developer, I need a pytest test that proves LiberoYoumuDataset returns exactly the same data as LeRobot's dataset for the same sample indices, giving confidence that training with youmu is correct.",
+      "title": "Run and fix LiberoYoumuDataset integration tests and add synthetic variants",
+      "description": "As a developer, I want the 6 TestGetItemRealDataset tests in test_libero_dataset_episode_per_file.py to pass with real data, and also add synthetic-data variants using the fixture from US-001.",
       "acceptanceCriteria": [
-        "Test file at tests/test_youmu_lerobot_parity.py (or similar location in the test directory)",
-        "Test loads the same dataset with both youmu and lerobot backends via build_libero_dataset from tasks/omni/train_qwen_vl_libero.py",
-        "For indices [0, 1, 2, 7, 8, 9, len-3, len-2, len-1] plus 5 random indices, asserts: observation.state tensors exactly equal (torch.equal), action tensors exactly equal, observation.images.image tensors exactly equal (pixel-perfect), episode_index values match",
-        "Test passes on the 64KB parquet dataset at /mnt/local/localcache00/libero_64KB (youmu side) and /mnt/local/localcache00/libero (lerobot side if needed)",
-        "Test skips gracefully if dataset directory or lerobot package is unavailable",
+        "test_dataset_length passes — dataset has >0 anchor frames",
+        "test_getitem_returns_standard_keys passes — output dict has observation.state, action, observation.images.image, episode_index, frame_index",
+        "test_getitem_state_shape passes — shape is (1, 8) for obs_len=1",
+        "test_getitem_action_shape passes — shape is (4, 7) for pred_len=4",
+        "test_getitem_image_shape passes — 4D uint8 tensor with 3 channels",
+        "test_getitem_finite_values passes — no NaN/inf in state or action",
+        "Add a TestGetItemSyntheticDataset class using the synthetic_libero_dir fixture that runs equivalent checks",
+        "All existing unit tests (TestLoadChunkEpisodePerFile, TestSchemaColumnDetection) still pass",
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": true,
-      "notes": "LeRobot may need the original dataset path if it has different parquet expectations. The youmu side should use the 64KB dataset. Both should produce identical outputs for matching indices."
+      "passes": false,
+      "notes": "Synthetic tests may have different expected shapes if the fixture uses different state/action dimensions — use the same dims (8 for state, 7 for actions) in the fixture."
     },
     {
       "id": "US-005",
-      "title": "Update training config and run e2e training",
-      "description": "As a developer, I need to update the training YAML config to point to the 64KB dataset and verify the full training pipeline runs at least 1 step successfully.",
+      "title": "Run and fix real-data task description tests and add synthetic variants",
+      "description": "As a developer, I want the 2 TestRealData tests in test_libero_task_descriptions.py to pass with real data, and also add synthetic-data variants using the fixture from US-001.",
       "acceptanceCriteria": [
-        "configs/multimodal/qwen3_vl/qwen3_vl_libero.yaml libero_data_dir set to /mnt/local/localcache00/libero_64KB",
-        "bash train.sh tasks/omni/train_qwen_vl_libero.py configs/multimodal/qwen3_vl/qwen3_vl_libero.yaml launches without import or config errors",
-        "Training completes at least 1 full step (forward + backward + optimizer step) without crash",
-        "Loss logged at step 1 is a finite number (not NaN/inf)",
+        "test_load_from_real_jsonl passes — loads real episodes.jsonl, all keys are non-negative ints, all values are non-empty strings",
+        "test_all_episodes_have_descriptions passes — every JSONL line maps to a dict entry",
+        "Add a TestSyntheticData class using the synthetic_libero_dir fixture that runs equivalent checks on synthetic episodes.jsonl",
+        "All existing unit tests (12 tests) still pass",
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": true,
-      "notes": "Single-node multi-GPU with FSDP2. Config uses: obs_len=1, pred_len=4, micro_batch_size=1, global_batch_size=64, flash_attention_2, rmpad_with_pos_ids=true. Step 1 loss=4.0726, Step 2 loss=2.3834."
+      "passes": false,
+      "notes": "Uses importlib + sys.modules mock-patching to bypass heavy veomni import chain. Synthetic tests should use same pattern."
+    },
+    {
+      "id": "US-006",
+      "title": "Full LIBERO test suite green run",
+      "description": "As a developer, I want to run the full LIBERO-related test suite and confirm everything passes end-to-end with zero skips.",
+      "acceptanceCriteria": [
+        "pytest tests/data/test_youmu_lerobot_parity.py -v — all 12 tests pass (0 skipped)",
+        "pytest tests/data/test_libero_dataset_episode_per_file.py -v — all tests pass including new synthetic tests (0 skipped)",
+        "pytest tests/data/test_libero_task_descriptions.py -v — all tests pass including new synthetic tests (0 skipped)",
+        "pytest tests/data/test_libero_metadata_jsonl.py -v — all 8 tests pass",
+        "No warnings about missing imports for av, huggingface_hub, lerobot, or youmu",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "This is a validation-only story. No code changes expected — just run all tests and confirm green. If anything fails, go back and fix in the relevant story."
     }
   ]
 }
