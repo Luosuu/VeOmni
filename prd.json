@@ -83,7 +83,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "Uses importlib + sys.modules mock-patching to bypass heavy veomni import chain. Synthetic tests should use same pattern."
     },
     {
