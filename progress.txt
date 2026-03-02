@@ -26,3 +26,18 @@
   - prd.json and progress.txt lived on the previous branch (`ralph/fix-skipped-tests`) and needed to be brought to the new branch
   - The submodule commit workflow: commit inside submodule dir first, then `git add submodules/youmu` in parent
 ---
+
+## 2026-03-02 - US-002
+- Verified all existing LIBERO tests pass with Rust-only LiberoYoumuDataset (0 skipped)
+- test_libero_dataset_episode_per_file.py: 20/20 passed
+- test_youmu_lerobot_parity.py: 12/12 passed (with HF_DATASETS_CACHE override)
+- test_libero_task_descriptions.py: 15/15 passed
+- test_libero_metadata_jsonl.py: 8/8 passed
+- No test files needed modification — all tests already work with Rust-only backend
+- py_compile passes on all test files and libero_dataset.py
+- Files changed: prd.json (mark US-002 passes), progress.txt
+- **Learnings for future iterations:**
+  - The synthetic fixtures in conftest.py write plain-encoded parquet (use_dictionary=False), so they work with Rust-only out of the box
+  - Real data at libero_64KB was already re-encoded without dictionary encoding in a prior step
+  - No PyArrow fallback paths were exercised by any test — confirms the fallback code was dead weight
+---

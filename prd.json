@@ -35,7 +35,7 @@
         "python -m py_compile on all changed test files passes"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Root FS is 97% full so HF_DATASETS_CACHE must be set for lerobot parity tests. The synthetic fixture in conftest.py already writes plain-encoded parquet, so synthetic tests should work with Rust-only. Real data at libero_64KB was re-encoded without dict encoding."
     },
     {
