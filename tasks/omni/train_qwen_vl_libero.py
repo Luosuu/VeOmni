@@ -166,12 +166,13 @@ def build_libero_dataset(
         pred_timestamps = [i / fps for i in range(pred_len)]
 
         return LeRobotDataset(
-            repo_id="local/libero",
+            repo_id="HuggingFaceVLA/libero",
             root=data_dir,
             delta_timestamps={
                 "observation.state": obs_timestamps,
                 "action": pred_timestamps,
                 "observation.images.image": obs_timestamps,
+                "observation.images.image2": obs_timestamps,
             },
             download_videos=False,
         )

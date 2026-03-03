@@ -218,11 +218,17 @@ def process_libero_sample_qwen3_vl(
             Default ``-1`` (the anchor / most recent frame).
     """
     # --- Image processing ---
-    # Select a single observation frame as the image input (uint8 HWC).
-    images_tensor = sample["observation.images.image"]  # (obs_len, H, W, 3)
-    obs_image = images_tensor[obs_index].numpy()  # (H, W, 3) uint8 ndarray
+    # Select a single observation frame as the image input.
+    # LeRobot returns (obs_len, C, H, W) float32 in [0, 1]; Youmu returns (obs_len, H, W, C) uint8.
+    images_tensor = sample["observation.images.image"]  # (obs_len, ...)
+    obs_frame = images_tensor[obs_index]  # (C, H, W) float32 or (H, W, C) uint8
     from PIL import Image as PILImage
 
+    if obs_frame.ndim == 3 and obs_frame.shape[0] in (1, 3):
+        # CHW float32 [0,1] → HWC uint8 [0,255]
+        obs_image = (obs_frame.permute(1, 2, 0) * 255).to(torch.uint8).numpy()
+    else:
+        obs_image = obs_frame.numpy()
     pil_image = PILImage.fromarray(obs_image)
 
     image_inputs = processor.image_processor(images=[pil_image], return_tensors="pt")
