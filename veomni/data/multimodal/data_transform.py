@@ -261,6 +261,20 @@ def process_libero_sample_qwen3_vl(
     input_ids[image_mask] = 0
     input_ids[video_mask] = 0
 
+    # --- Append state placeholder token ---
+    # A dummy token (id=0) at the end of the sequence; the model will replace
+    # its embedding with the projected observation_state via state_mask.
+    state_placeholder = torch.zeros(1, dtype=input_ids.dtype)
+    input_ids = torch.cat([input_ids, state_placeholder])
+    attention_mask = torch.cat([attention_mask, torch.ones(1, dtype=attention_mask.dtype)])
+    next_pos = position_ids[:, -1:] + 1  # (3, 1)
+    position_ids = torch.cat([position_ids, next_pos], dim=-1)
+    image_mask = torch.cat([image_mask, torch.zeros(1, dtype=image_mask.dtype)])
+    video_mask = torch.cat([video_mask, torch.zeros(1, dtype=video_mask.dtype)])
+    # state_mask: True only for the appended state token
+    state_mask = torch.zeros(len(input_ids), dtype=torch.bool)
+    state_mask[-1] = True
+
     # --- Observation state & action labels ---
     # Use the last obs_len state frames; model will receive (obs_len, state_dim)
     # but we flatten to the last frame to match the single-token state injection.
@@ -273,6 +287,7 @@ def process_libero_sample_qwen3_vl(
         "position_ids": position_ids,
         "image_mask": image_mask,
         "video_mask": video_mask,
+        "state_mask": state_mask,
         "observation_state": observation_state,
         "labels": labels,
     }

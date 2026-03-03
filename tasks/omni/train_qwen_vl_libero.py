@@ -545,6 +545,10 @@ def main():
                 profiler.step()
                 if global_step == args.train.profile_end_step:
                     profiler.stop()
+            # Barrier after profiler step to prevent rank desync when profiler
+            # does heavy I/O (e.g. export_chrome_trace) on a subset of ranks.
+            if args.train.enable_profiling and global_step <= args.train.profile_end_step:
+                dist.barrier()
 
             if args.train.save_steps and global_step % args.train.save_steps == 0:
                 helper.empty_cache()
