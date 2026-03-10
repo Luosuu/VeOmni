@@ -1120,7 +1120,7 @@ class Qwen3VLForConditionalGenerationAction(Qwen3VLForConditionalGeneration):
         # Use the last token's hidden state (the state token) for action prediction.
         # For packed sequences (B=1, multiple subsequences), extract the last
         # token of each subsequence using the updated cu_seq_lens.
-        if "cu_seq_lens_q" in kwargs:
+        if "cu_seq_lens_q" in kwargs and hidden_states.shape[0] == 1:
             cu_q = kwargs["cu_seq_lens_q"]
             # Last token indices of each subsequence: cu_q[1:] - 1
             last_indices = cu_q[1:] - 1  # (num_samples,)

@@ -153,6 +153,9 @@ def build_libero_dataset(
             obs_len=obs_len,
             pred_len=pred_len,
             chunk_index=chunk_index,
+            state_column="observation.state",
+            action_column="action",
+            image_column="observation.images.image",
         )
     elif backend == "lerobot":
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -271,8 +274,25 @@ def main():
     model_config.action_dim = args.data.pred_len and 7  # LIBERO action dim
     model_config.pred_len = args.data.pred_len
 
-    with init_empty_weights():
-        model = Qwen3VLForConditionalGenerationAction(model_config)
+    if args.train.init_device == "meta":
+        # FSDP2 path: create on meta device, weights loaded later by build_parallelize_model
+        with init_empty_weights():
+            model = Qwen3VLForConditionalGenerationAction(model_config)
+    else:
+        # Single-GPU / DDP path: load pretrained VLM weights then init new heads on device
+        from veomni.models import load_model_weights
+
+        with init_empty_weights():
+            model = Qwen3VLForConditionalGenerationAction(model_config)
+        # load_model_weights calls to_empty() then loads checkpoint weights.
+        # New heads (state_proj, action_head) not in checkpoint get initialized
+        # via _init_weights in the model's default dtype (float32).
+        load_model_weights(model, args.model.model_path, get_device_type())
+        # Cast entire model to bf16 to ensure visual encoder (often stored
+        # as float32 in checkpoints) and new heads all use the same dtype.
+        # FSDP mixed precision normally handles this, but single-GPU/DDP
+        # needs it done explicitly.
+        model.to(torch.bfloat16)
 
     model_config = model.config
     helper.print_device_mem_info("VRAM usage after building model")
