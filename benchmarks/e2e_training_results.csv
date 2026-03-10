@@ -1,0 +1,3 @@
+backend,obs_len,pred_len,batch_size,num_workers,steps_per_sec,samples_per_sec,avg_step_time_sec,gpu_peak_mb,total_samples,total_time_sec,timed_steps,error
+youmu,1,4,2,0,3.5534,7.11,0.2814,20436.69,40,5.6284,20,
+lerobot,1,4,2,0,5.1974,10.39,0.1924,20441.41,40,3.8481,20,
