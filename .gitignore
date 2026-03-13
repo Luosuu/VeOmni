@@ -161,3 +161,10 @@ nsysoutput/
 
 # vscode config
 .vscode/
+
+# ralph agent
+scripts/ralph/
+progress.txt
+
+# PRD files
+tasks/prd-*.md
