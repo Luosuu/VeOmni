@@ -1,4 +1,4 @@
-"""Data loading throughput benchmark: Youmu vs LeRobot.
+"""Data loading throughput benchmark: Youmu vs Youmu Page-Aligned vs LeRobot.
 
 Measures pure data loading throughput (samples/sec, time-to-first-sample,
 peak RSS memory) across multiple configurations of num_workers, obs_len,
@@ -6,8 +6,9 @@ and batch_size.
 
 Usage:
     . .venv/bin/activate
-    python scripts/benchmark_data_loading.py              # full sweep (120 configs)
+    python scripts/benchmark_data_loading.py              # full sweep
     python scripts/benchmark_data_loading.py --quick      # smoke test (1 config per backend)
+    python scripts/benchmark_data_loading.py --backends youmu youmu_page_aligned lerobot
 """
 
 import argparse
@@ -21,7 +22,7 @@ import time
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 
 # Default dataset paths
 YOUMU_DATA_DIR = "/home/ubuntu/dataset/hf_vla_64k"
@@ -56,6 +57,29 @@ def create_youmu_dataset(data_dir: str, obs_len: int, pred_len: int):
     from youmu.libero_dataset import LiberoYoumuDataset
 
     return LiberoYoumuDataset(
+        data_dir=data_dir,
+        obs_len=obs_len,
+        pred_len=pred_len,
+        state_column="observation.state",
+        action_column="action",
+        image_column="observation.images.image",
+    )
+
+
+def create_youmu_page_aligned_dataset(data_dir: str, obs_len: int, pred_len: int):
+    """Create a LiberoYoumuPageAlignedDataset instance.
+
+    Args:
+        data_dir: Path to 64KB page-size parquet dataset.
+        obs_len: Number of observation frames.
+        pred_len: Number of prediction frames.
+
+    Returns:
+        LiberoYoumuPageAlignedDataset instance (IterableDataset).
+    """
+    from youmu.libero_dataset import LiberoYoumuPageAlignedDataset
+
+    return LiberoYoumuPageAlignedDataset(
         data_dir=data_dir,
         obs_len=obs_len,
         pred_len=pred_len,
@@ -166,11 +190,13 @@ def benchmark_one_config(
     """
     gc.collect()
 
+    # IterableDataset handles shuffling internally; map-style datasets use DataLoader shuffle
+    is_iterable = isinstance(dataset, IterableDataset)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        shuffle=True,
+        shuffle=not is_iterable,
         drop_last=False,
         persistent_workers=num_workers > 0,
     )
@@ -280,6 +306,8 @@ def run_sweep(
             try:
                 if backend == "youmu":
                     dataset = create_youmu_dataset(youmu_data_dir, obs_len, pred_len)
+                elif backend == "youmu_page_aligned":
+                    dataset = create_youmu_page_aligned_dataset(youmu_data_dir, obs_len, pred_len)
                 else:
                     dataset = create_lerobot_dataset(lerobot_data_dir, obs_len, pred_len)
                 init_time = time.perf_counter() - t0
@@ -454,7 +482,7 @@ def print_comparison_table(results: list[dict]):
 def main():
     """Entry point: parse args and run benchmark sweep."""
     parser = argparse.ArgumentParser(
-        description="Benchmark data loading throughput: Youmu vs LeRobot"
+        description="Benchmark data loading throughput: Youmu vs Youmu Page-Aligned vs LeRobot"
     )
     parser.add_argument(
         "--youmu-data-dir",
@@ -482,8 +510,8 @@ def main():
     parser.add_argument(
         "--backends",
         nargs="+",
-        default=["youmu", "lerobot"],
-        choices=["youmu", "lerobot"],
+        default=["youmu", "youmu_page_aligned", "lerobot"],
+        choices=["youmu", "youmu_page_aligned", "lerobot"],
         help="Backends to benchmark",
     )
     parser.add_argument(
@@ -547,7 +575,7 @@ def main():
         warmup_iterations = args.warmup
 
     print("=" * 60)
-    print("Data Loading Benchmark: Youmu vs LeRobot")
+    print("Data Loading Benchmark: Youmu vs Youmu Page-Aligned vs LeRobot")
     print("=" * 60)
     print(f"  Mode:         {'quick' if args.quick else 'full'}")
     print(f"  Backends:     {args.backends}")

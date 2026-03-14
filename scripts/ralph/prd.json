@@ -83,7 +83,7 @@
         "Tests pass"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "The benchmark script currently iterates DataLoader via for-loop which works for both map-style and iterable datasets. However, IterableDataset ignores DataLoader's shuffle param — make sure shuffle=False is passed for youmu_page_aligned. Also note: IterableDataset with num_workers>0 means each worker iterates independently, so the effective iteration rate scales with workers. Add create_youmu_page_aligned_dataset() factory function alongside existing create_youmu_dataset()."
     },
     {
