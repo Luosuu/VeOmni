@@ -1,0 +1,28 @@
+# Ralph Progress Log
+Started: Sat Mar 14 05:06:40 UTC 2026
+---
+
+## Codebase Patterns
+- `read_multi_column_row_range_py` operates on physical leaf columns, NOT logical columns. For LIST columns it returns flat values, not ListArrays. Use `read_list_row_range_py` for list columns.
+- Physical column indices: observation.images.image.bytes=0, observation.state=4, action=5 (for hf_vla_64k dataset)
+- `_find_physical_column_index` in `youmu/libero_dataset.py` maps logical column names to physical indices, handling struct and list types
+- Parquet files in hf_vla_64k have 1 row group per file, so cross-RG reads within a single file are not needed
+- Always write test Parquet files with `use_dictionary=False, write_page_index=True` for Youmu compatibility
+
+## 2026-03-14 - US-001
+- Investigated `read_multi_column_row_range_py` Rust API readiness for Libero column types
+- **Key Finding: API gap with LIST columns**
+  - `read_multi_column_row_range_py` works correctly for flat column types (BYTE_ARRAY for images, INT64, FLOAT)
+  - It does NOT work correctly for LIST<FLOAT32> columns (state, action): returns N flat float values instead of N lists
+  - Root cause: `read_multi_column_row_range` uses `read_rows_from_column` which reads physical leaf pages without list offset reconstruction. The list-aware reader `read_list_row_range` uses a separate code path (`read_list_float_page`) that correctly handles list offsets.
+- **Proposed Rust fix for US-002:**
+  - Option A (recommended): Keep using `read_list_row_range_py` for state/action (LIST columns) and `read_multi_column_row_range_py` only for flat columns (images). This means 2→2 calls (no reduction for obs window since state is LIST, but image can use multi-column if combined with other flat columns).
+  - Option B: Extend `read_multi_column_row_range_with_reader` to detect list columns in the schema and dispatch to `read_list_float_page` logic. This would enable true multi-column reads mixing list and flat types.
+  - Option C: Create `read_multi_list_column_row_range_py` that reads multiple LIST columns in one call, reusing offset index parsing.
+- **Practical impact for US-002:** Since state+image share the obs window, and state is a LIST column while image is BYTE_ARRAY, they cannot be combined into a single `read_multi_column_row_range_py` call with correct results. The optimization in US-002 will need to use Option A, B, or C.
+- Files changed: tests/test_multi_column_row_range.py (new, 19 tests)
+- **Learnings for future iterations:**
+  - The multi-column API is a thin wrapper that loops over `read_rows_from_column` per column — it shares offset index parsing but doesn't batch I/O
+  - hf_vla_64k files have 1 row group each, so cross-RG boundary testing requires synthetic fixtures
+  - `_count_physical_columns` handles nested types (struct children count as separate physical columns)
+---

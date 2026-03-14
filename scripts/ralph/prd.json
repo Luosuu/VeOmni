@@ -1,0 +1,67 @@
+{
+  "project": "VeOmni",
+  "branchName": "tianle/qwen3-vla",
+  "description": "Youmu Multi-Column Row-Range Data Loading - Reduce I/O syscalls by reading multiple columns per call instead of one column per call",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Investigate Rust API readiness for multi-column row-range reads",
+      "description": "As a developer, I need to verify that read_multi_column_row_range_py works correctly with Libero's column types (LIST<FLOAT32> for state/action, BYTE_ARRAY for image bytes) so that I know what Rust changes (if any) are needed.",
+      "acceptanceCriteria": [
+        "Write a test script that calls read_multi_column_row_range_py with [state_col_idx, action_col_idx, image_bytes_col_idx] on the hf_vla_64k dataset and verifies returned arrays have correct types and row counts",
+        "Test reading with mixed column types in a single call: two LIST<FLOAT32> columns (state, action) and one BYTE_ARRAY column (image bytes)",
+        "Test reading across row group boundaries (range that spans two row groups)",
+        "Document any Rust API gaps or bugs found in progress.txt",
+        "If Rust changes are needed, document specifics in progress.txt with proposed fixes",
+        "Tests pass"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Key files: submodules/youmu/src/lib.rs (Rust APIs), submodules/youmu/python/youmu/libero_dataset.py (column index discovery via _find_physical_column_index). Dataset at /home/ubuntu/dataset/hf_vla_64k. Column names: observation.state (LIST<FLOAT32>), action (LIST<FLOAT32>), observation.images.image (struct with bytes child as BYTE_ARRAY). Use state_column='observation.state', action_column='action', image_column='observation.images.image' with child_name='bytes'. FINDING: read_multi_column_row_range_py does NOT support LIST columns correctly — returns flat leaf values instead of ListArrays. See progress.txt for proposed fixes."
+    },
+    {
+      "id": "US-002",
+      "title": "Multi-column row-range reads in LiberoYoumuDataset",
+      "description": "As a developer, I want LiberoYoumuDataset.__getitem__ to read columns in fewer I/O calls using read_multi_column_row_range_py, so that I/O syscalls are reduced per sample.",
+      "acceptanceCriteria": [
+        "__getitem__ uses read_multi_column_row_range_py to read state+image together in one call for the obs window, and action in a separate call for the pred window (2 calls instead of 3)",
+        "__getitem__ returns the same dict structure: observation.state (float32, (obs_len, state_dim)), action (float32, (pred_len, action_dim)), observation.images.image (uint8, (obs_len, H, W, 3)), plus frame_index and episode_index",
+        "Existing dataset unit tests and integration tests still pass with no changes",
+        "A new unit test verifies multi-column read produces identical outputs to the old per-column reads for at least 100 random indices",
+        "Tests pass"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "Current __getitem__ makes 3 separate calls: _read_list_column_range for state, _read_list_column_range for action, _read_image_range for image. The obs window is [anchor - obs_len + 1, anchor] inclusive and pred window is [anchor + 1, anchor + pred_len] inclusive. State and image share the obs window range, so they can be read together in one multi-column call. Action uses the pred window range in a separate call. This reduces from 3 calls to 2. Import read_multi_column_row_range_py from youmu."
+    },
+    {
+      "id": "US-003",
+      "title": "I/O efficiency benchmark",
+      "description": "As a developer, I want to measure and compare I/O efficiency between the old per-column reads and new multi-column reads, plus the lerobot baseline, so that we can quantify the improvement.",
+      "acceptanceCriteria": [
+        "Extend scripts/benchmark_data_loading.py to measure I/O bytes read from disk via /proc/self/io read_bytes counter before and after each benchmark run",
+        "Compute I/O amplification ratio (bytes_read / bytes_needed) where bytes_needed is sum of tensor sizes returned",
+        "Add io_bytes_read, payload_bytes, io_amplification_ratio columns to the output CSV",
+        "New benchmark metrics have unit tests verifying correct calculation",
+        "Tests pass"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Read /proc/self/io before and after benchmark to get read_bytes delta. Useful payload = sum of all tensor element counts * element byte size across all samples. The benchmark already supports youmu and lerobot backends. Since US-002 modifies LiberoYoumuDataset in-place, the existing youmu backend will automatically use the new multi-column reads."
+    },
+    {
+      "id": "US-004",
+      "title": "Run full benchmark and write report",
+      "description": "As a developer, I want a benchmark report comparing lerobot vs youmu (with multi-column reads) so that the I/O efficiency improvement is documented.",
+      "acceptanceCriteria": [
+        "Run the full benchmark sweep with both backends (lerobot, youmu)",
+        "Report includes: samples/sec, I/O amplification ratio, time-to-first-sample, peak RSS for each backend across multiple configurations",
+        "Report saved to benchmarks/multi_column_benchmark_report.md",
+        "Results demonstrate measurable I/O efficiency improvement for multi-column reads"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "Use scripts/benchmark_data_loading.py with --backends youmu lerobot. Include a comparison table and brief analysis."
+    }
+  ]
+}
