@@ -1,147 +1,44 @@
 # Ralph Progress Log
 Started: 2026-03-14
+---
 
 ## Codebase Patterns
-- Youmu's `read_multi_column_aligned_py` returns **flat FloatArray** for LIST<FLOAT32> columns (not ListArray). Access rows via `arr[row * dim : (row+1) * dim].to_pylist()`. Image (BYTE_ARRAY) columns return BinaryArray with direct index access.
-- The test fixture uses column names `observation.state`, `action`, `observation.images.image` (not the defaults `state`, `actions`, `image`). Always pass explicit column names when testing with fixtures.
-- `get_shuffled_multi_column_indices_dataset_level(file_paths, ref_col_idx)` returns shuffled `(file_idx, rg_idx, page_idx)` triples. Triples may repeat — de-duplicate with `set()`.
-- `read_multi_column_aligned_py` does NOT take a cache parameter (unlike `read_multi_column_row_range_py`). It opens the file directly each call.
-- Within a file, episodes are packed contiguously: `global_frame = file_global_base + file_row` where `file_global_base = ep.start_frame - ep_row_offset`.
-- Use `LiberoYoumuDataset._load_chunk()` as a static method to reuse chunk-loading logic across dataset classes.
-- Multi-worker page partitioning must use deterministic assignment (sorted unique pages) since `get_shuffled_multi_column_indices_dataset_level` returns different random orders per call.
-- When wrapping an `IterableDataset` with a transform, use `TransformIterableDataset` (not `MappingDataset`). `build_dataloader` auto-handles IterableDataset (skips sampler).
-- In benchmark scripts, `isinstance(dataset, IterableDataset)` to conditionally set `shuffle=False` for DataLoader — IterableDataset raises ValueError if shuffle=True.
-- `benchmark_data_loading.py` supports incremental CSV writing via `output_path` parameter to `run_sweep()` — partial results are preserved if OOM-killed mid-sweep.
-- `analyze_memory_benchmark.py`'s `find_crossover_point()` accepts a `backend` parameter to compare any youmu variant vs lerobot.
+- YAML configs use `yaml.safe_load`/`yaml.dump` — always use `safe_load` (not `load`) for security
+- Training configs follow the pattern: model/data/train top-level sections
+- Valid libero_dataset_backend values: youmu, youmu_page_aligned, lerobot, lance
+- youmu_page_aligned uses /home/ubuntu/dataset/hf_vla_64k, lerobot uses /home/ubuntu/dataset/hf_vla
+- Training launch: `torchrun --nproc_per_node=1 tasks/omni/train_qwen_vl_libero.py --config <yaml>`
+- For single-GPU benchmarks, set global_batch_size = micro_batch_size
+- Config naming: youmu_page_aligned -> bench_page_aligned_bs{N}.yaml, lerobot -> bench_lerobot_bs{N}.yaml
+- tqdm output (stderr) contains it/s or s/it rate; parse last occurrence for overall rate
+- OOM detection: check exit code != 0 AND presence of "CUDA out of memory" or "OutOfMemoryError"
+- GPU memory monitoring: poll nvidia-smi in background thread during subprocess training runs
 
 ---
 
 ## 2026-03-14 - US-001
-- Implemented `LiberoYoumuPageAlignedDataset(IterableDataset)` in `submodules/youmu/python/youmu/libero_dataset.py`
-- Key design: page-level shuffled iteration → LRU page cache for edge anchors → shuffle buffer for sample randomization → finalize (decode images) on yield
-- Pre-computes page metadata at init by reading reference column pages to determine row counts and global frame mapping
-- Groups anchors by page for efficient processing during iteration
-- Stores raw PNG bytes in shuffle buffer, decodes only on yield to minimize memory
-- Files changed:
-  - `submodules/youmu/python/youmu/libero_dataset.py` (added ~470 lines)
-  - `submodules/youmu/test/test_python.py` (added 16 tests, ~340 lines)
+- Created base benchmark YAML at configs/multimodal/qwen3_vl/qwen3_vl_libero_bench.yaml
+- Created scripts/generate_bench_yamls.py to generate per-(backend, batch_size) YAML variants
+- Generated 14 YAML configs (7 batch sizes × 2 backends) in configs/multimodal/qwen3_vl/bench/
+- Created tests/test_generate_bench_yamls.py with 14 tests — all passing
+- Files changed: configs/multimodal/qwen3_vl/qwen3_vl_libero_bench.yaml, scripts/generate_bench_yamls.py, tests/test_generate_bench_yamls.py, configs/multimodal/qwen3_vl/bench/*.yaml
 - **Learnings for future iterations:**
-  - `read_multi_column_aligned_py` returns flat arrays for list columns — need to manually slice by dimension
-  - The first column in `column_indices` list is the reference for page alignment
-  - Page cache size of 3 is sufficient for typical obs_len/pred_len (2/4) since edge anchors need at most current + 1 neighbor page
-  - Fixture has 4 pages (2 RGs × 2 pages each), with 49+1 rows per RG — useful for testing edge cases
+  - Base YAML was adapted from qwen3_vl_libero.yaml with paths updated for this machine
+  - yaml.dump sorts keys alphabetically by default — use sort_keys=False to preserve order
+  - Deep copy via yaml.safe_load(yaml.dump(config)) to avoid mutation of base config
 ---
 
 ## 2026-03-14 - US-002
-- Added multi-worker DataLoader support to `LiberoYoumuPageAlignedDataset`
-- Deterministic page partitioning: sorted unique pages, assigned by `page_index % num_workers == worker_id`
-- Added `__getstate__`/`__setstate__` to exclude runtime-only objects (`_page_cache`, `_shuffle_buffer`)
-- Each worker independently maintains its own shuffle buffer and page cache
-- Files changed:
-  - `submodules/youmu/python/youmu/libero_dataset.py` (added `__getstate__`, `__setstate__`, worker partitioning in `__iter__`)
-  - `submodules/youmu/test/test_python.py` (added 8 tests: pickling, state exclusion, 4-worker partitioning, 2-worker coverage, DataLoader batch shapes, DataLoader all samples, DataLoader with images, single-worker equivalence)
+- Rewrote scripts/benchmark_e2e_training.py as subprocess-based benchmark runner
+- Iterates over YAML configs in configs/multimodal/qwen3_vl/bench/, launches each via torchrun
+- Parses tqdm output for steps/sec, monitors GPU memory via nvidia-smi background thread
+- Detects OOM and skips larger batch sizes for that backend
+- Saves results to benchmarks/e2e_training_results.csv with required columns
+- Created tests/test_benchmark_e2e_training.py with 41 tests — all passing
+- Files changed: scripts/benchmark_e2e_training.py, tests/test_benchmark_e2e_training.py
 - **Learnings for future iterations:**
-  - `get_shuffled_multi_column_indices_dataset_level` returns different random orders each call — page partitioning must use deterministic assignment (sorted unique pages), not position in shuffled list
-  - Mock `torch.utils.data.get_worker_info` with `unittest.mock.patch` for simulating multi-worker in unit tests
-  - Real DataLoader multi-worker tests (num_workers>0) work correctly with the fixture dataset
----
-
-## 2026-03-14 - US-003
-- Integrated `youmu_page_aligned` backend into the training loop (`tasks/omni/train_qwen_vl_libero.py`)
-- Added `TransformIterableDataset` wrapper in `veomni/data/dataset.py` for applying transforms to IterableDataset
-- Changed default `libero_dataset_backend` from `youmu` to `youmu_page_aligned`
-- Training loop auto-detects IterableDataset and uses `TransformIterableDataset` instead of `MappingDataset`
-- `build_dataloader` already handles IterableDataset correctly (skips sampler, no shuffle)
-- `LiberoYoumuPageAlignedDataset.__len__` returns anchor count for step calculation
-- Files changed:
-  - `tasks/omni/train_qwen_vl_libero.py` (added youmu_page_aligned branch, IterableDataset detection)
-  - `veomni/data/dataset.py` (added TransformIterableDataset class)
-  - `tests/data/test_train_qwen_vl_libero_integration.py` (15 tests: wrapper, build_libero_dataset, default, DataLoader compat)
-- **Learnings for future iterations:**
-  - `build_dataloader` in `veomni/data/data_loader.py` already handles IterableDataset — skips sampler creation (line 137), no explicit `shuffle=False` needed since DataLoader defaults to no shuffle without a sampler
-  - `MappingDataset` uses `__getitem__` and cannot wrap an `IterableDataset` — need `TransformIterableDataset` for iterable backends
-  - `MyDataArguments` requires `train_path` from parent `DataArguments` — must pass it when testing defaults
-  - Episode-per-file JSONL metadata is simpler to set up in test fixtures than the parquet metadata format (which requires `data/file_index`, `dataset_from_index`, `dataset_to_index` columns)
----
-
-## 2026-03-14 - US-004
-- Implemented correctness validation integration tests in `tests/data/test_page_aligned_correctness.py`
-- 8 tests across 4 test classes:
-  - `TestAnchorSetComparison`: full-epoch anchor set identity (2 tests)
-  - `TestTensorComparison`: state/action/image tensor matching for random anchors (2 tests)
-  - `TestShuffleBufferRandomness`: output order is shuffled, episodes are mixed (2 tests)
-  - `TestEdgeAnchorCorrectness`: first/last anchors per page match row-range (2 tests)
-- Uses module-scoped fixtures to share expensive full-epoch iteration across tests
-- Files changed:
-  - `tests/data/test_page_aligned_correctness.py` (new, ~300 lines)
-  - `scripts/ralph/prd.json` (US-004 passes: true)
-- **Learnings for future iterations:**
-  - Full-epoch iteration of 265K samples (no images) takes ~2 minutes — use module-scoped fixtures to share this across tests
-  - `shuffle_buffer_size=300000` (larger than anchor count) ensures all samples are collected before draining, useful for testing but not production
-  - Image tensor comparison with `torch.equal` (exact match) works because both backends decode the same PNG bytes
-  - Edge anchors at page boundaries correctly use the LRU page cache for cross-page reads — no issues found
----
-
-## 2026-03-14 - US-005
-- Added `youmu_page_aligned` backend to both benchmark scripts (`scripts/benchmark_data_loading.py` and `scripts/benchmark_data_loading_sweep.py`)
-- Added `create_youmu_page_aligned_dataset()` factory function alongside existing `create_youmu_dataset()`
-- Updated `benchmark_one_config` to detect `IterableDataset` and set `shuffle=False` for DataLoader
-- Updated `--backends` CLI arg choices and defaults to include `youmu_page_aligned`
-- Ran full benchmark: 72 configs (3 backends x 4 num_workers x 3 obs_lens x 2 batch_sizes x 200 iterations)
-- Results saved to `benchmarks/page_aligned_unconstrained_results.csv`
-- Files changed:
-  - `scripts/benchmark_data_loading.py` (added factory, IterableDataset handling, backend choice)
-  - `scripts/benchmark_data_loading_sweep.py` (same changes)
-  - `tests/test_benchmark_page_aligned.py` (new, 16 tests)
-  - `benchmarks/page_aligned_unconstrained_results.csv` (new, 72 result rows)
-  - `scripts/ralph/prd.json` (US-005 passes: true)
-- **Learnings for future iterations:**
-  - `DataLoader(shuffle=True)` raises `ValueError` for `IterableDataset` — must check `isinstance(dataset, IterableDataset)` before creating DataLoader
-  - Page-aligned is dramatically faster: 589 samples/s (best) vs 200 for lerobot and 84 for youmu row-range
-  - Page-aligned uses more RSS memory (1.5-3.7GB) vs youmu row-range (0.8GB) due to shuffle buffer and page cache
-  - I/O amplification shows 0.00x for multi-worker configs because `/proc/self/io` only tracks the main process, not worker subprocesses
----
-
-## 2026-03-14 - US-006
-- Ran memory-constrained benchmark sweep with all 3 backends across [2G, 4G, 8G, 16G, 32G] RAM limits
-- Updated `benchmark_memory_sweep.sh` to support 3 backends (default: youmu, youmu_page_aligned, lerobot) with `--backends`, `--ram-limits`, `--output-dir` CLI flags
-- Updated `analyze_memory_benchmark.py` to handle 3 backends: ratio columns for each youmu variant vs lerobot, crossover detection per variant
-- Added incremental CSV writing to `benchmark_data_loading.py` so partial results survive OOM kills
-- Results saved to `benchmarks/memory_constrained_page_aligned/`
-- Key findings:
-  - **Page-aligned crossover at 8G**: 183 samples/s vs lerobot's 142 samples/s (1.29x)
-  - **Peak at 16G**: page-aligned reaches 226 samples/s (1.53x lerobot)
-  - **youmu row-range degrades severely**: 5-9 samples/s at 2G-8G, only 90 at 32G
-  - **Page-aligned at low RAM** (single worker): 80-134 samples/s even at 2G-4G, but multi-worker OOMs due to per-worker shuffle buffer memory
-- Files changed:
-  - `scripts/benchmark_memory_sweep.sh` (added --backends, --ram-limits, --output-dir flags; default 3 backends; default RAM [2G-32G])
-  - `scripts/benchmark_data_loading.py` (incremental CSV writing via output_path, CSV_FIELDNAMES constant)
-  - `scripts/analyze_memory_benchmark.py` (find_crossover_point backend param, 3-backend report with multiple ratio columns)
-  - `tests/test_analyze_memory_benchmark.py` (added 3 tests: page_aligned_backend, default_backend, three_backends report)
-  - `tests/test_benchmark_memory_sweep.sh` (updated RAM limit check, added youmu_page_aligned check)
-  - `benchmarks/memory_constrained_page_aligned/` (5 CSV files + combined + report)
-  - `scripts/ralph/prd.json` (US-006 passes: true)
-- **Learnings for future iterations:**
-  - `youmu_page_aligned` uses 1.5-3.2GB RSS per worker due to shuffle buffer + page cache — at 2G-4G RAM limits, multi-worker configs OOM but single-worker works fine
-  - Incremental CSV writing (flush after each config) is essential for memory-constrained benchmarks — without it, OOM kills lose all data
-  - `benchmark_memory_sweep.sh` runs each backend separately per RAM limit, so one backend's OOM doesn't prevent others from running
-  - The cgroup memory limit (via `systemd-run --scope -p MemoryMax`) applies to all processes in the scope including DataLoader workers
----
-
-## 2026-03-14 - US-007
-- Wrote comprehensive benchmark report at `benchmarks/page_aligned_benchmark_report.md`
-- Report combines unconstrained (US-005) and memory-constrained (US-006) results
-- Includes: summary tables, ASCII throughput chart, crossover analysis, I/O amplification comparison, memory efficiency, and backend recommendations
-- Key findings documented:
-  - Page-aligned: 589 samples/s unconstrained, 226 samples/s at 16G constrained
-  - Crossover vs lerobot at 8G RAM (183 vs 142 samples/s, 1.29x)
-  - I/O amplification: row-range 239x, page-aligned 18x, lerobot 0.7x
-  - Recommendation: use page-aligned for production (>=8GB RAM), lerobot for low-memory
-- Files changed:
-  - `benchmarks/page_aligned_benchmark_report.md` (new, comprehensive report)
-  - `scripts/ralph/prd.json` (US-007 passes: true)
-- **Learnings for future iterations:**
-  - Row-range I/O amplification is roughly constant across RAM limits (184-239x) — the problem is random access pattern, not cache miss rate
-  - LeRobot throughput is remarkably stable across RAM limits (138-148 samples/s) — Arrow memory-mapping handles cache pressure gracefully
-  - Page-aligned throughput actually peaks at 16G (226 samples/s), not 32G (205 samples/s) — likely due to OS page cache thrashing at higher worker counts with more available RAM
+  - Previous script was in-process (imported model directly); PRD required subprocess approach via torchrun
+  - tqdm writes to stderr when output is a pipe, format: "N/M [elapsed<remaining, X.XXit/s]"
+  - GpuMemoryMonitor needs enough mock side_effect values for background thread polling
+  - parse_steps_completed picks up "1/1" from "Epoch 1/1" — max() handles this correctly
 ---

@@ -1,120 +1,69 @@
 {
   "project": "VeOmni",
   "branchName": "tianle/qwen3-vla",
-  "description": "Page-Aligned Data Loading with Shuffle Buffer - Iterate by Parquet pages with shuffle buffer for ~1x I/O amplification under memory pressure",
+  "description": "E2E Training Benchmark - Compare youmu_page_aligned vs lerobot end-to-end training throughput on Qwen3-VL-2B with batch size sweep until OOM",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Page-aligned IterableDataset core implementation",
-      "description": "As a developer, I want a page-aligned IterableDataset that iterates over Parquet pages and yields individual samples through a shuffle buffer, so that I/O amplification is minimized while samples are randomly ordered.",
+      "title": "Create benchmark job YAML configs",
+      "description": "As a developer, I want per-batch-size YAML configs for both backends so that I can run each configuration as a separate training job.",
       "acceptanceCriteria": [
-        "New class LiberoYoumuPageAlignedDataset(IterableDataset) in submodules/youmu/python/youmu/libero_dataset.py",
-        "Constructor accepts same args as LiberoYoumuDataset plus shuffle_buffer_size (default 10000) and page_cache_size (default 3)",
-        "On __iter__: generates shuffled (file, row_group, page) triples via get_shuffled_multi_column_indices_dataset_level, re-shuffled each epoch",
-        "For each page: reads all columns (state, action, image) via read_multi_column_aligned_py in one call",
-        "Extracts valid anchor-frame samples from each page, filtering episode boundaries",
-        "For edge anchors needing rows from neighboring pages: uses LRU page cache (default 3 pages) to serve cross-page reads without extra disk I/O",
-        "Shuffle buffer: when full, pop random sample and yield it; at epoch end, drain buffer in random order",
-        "Each yielded sample dict has keys: observation.state (float32, (obs_len, state_dim)), action (float32, (pred_len, action_dim)), observation.images.image (uint8, (obs_len, H, W, 3)), frame_index, episode_index",
-        "Comprehensive unit tests for: page iteration, page cache LRU eviction, shuffle buffer fill/drain, episode boundary filtering, single-page sample extraction",
+        "Base YAML at configs/multimodal/qwen3_vl/qwen3_vl_libero_bench.yaml with: model_path /home/ubuntu/huggingface/Qwen3-VL-2B-Instruct, obs_len=4, pred_len=2, max_steps=50, use_wandb=false, flash_attention_2, rmpad_with_pos_ids=true",
+        "Script scripts/generate_bench_yamls.py generates YAML variants for each (backend, micro_batch_size) combo: backends=[youmu_page_aligned, lerobot], micro_batch_sizes=[1, 2, 4, 8, 16, 32, 64]",
+        "Generated YAMLs saved to configs/multimodal/qwen3_vl/bench/ with names like bench_page_aligned_bs1.yaml, bench_lerobot_bs4.yaml",
+        "Each YAML sets: libero_dataset_backend, micro_batch_size, global_batch_size = micro_batch_size (single GPU), output_dir = /tmp/bench_<backend>_bs<N>, libero_data_dir = /home/ubuntu/dataset/hf_vla_64k for youmu_page_aligned or /home/ubuntu/dataset/hf_vla for lerobot",
         "Tests pass"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Key design: (1) get_shuffled_multi_column_indices_dataset_level(file_paths, reference_col_idx) returns shuffled (file_idx, rg_idx, page_idx) triples. (2) read_multi_column_aligned_py(file_path, rg_idx, column_indices, page_idx) reads all columns for a page. (3) Page cache is dict keyed by (file_path, rg_idx, page_idx) with LRU eviction. (4) For each page, determine which global rows it contains, then for each row check if it's a valid anchor (obs and pred windows don't cross episode boundaries). (5) Edge anchors: if obs window extends before this page or pred window extends after, read needed rows from page cache (which may trigger a cache miss and disk read of the neighboring page). IMPORTANT: verify read_multi_column_aligned_py handles LIST<FLOAT32> columns — previous PRD found read_multi_column_row_range_py needed Rust fixes for LIST columns. The aligned reader may need the same fix. If so, fix in Rust first. Shuffle buffer memory concern: 10K samples with decoded images could use ~2GB. Consider storing samples with raw PNG bytes in buffer and decoding on yield to reduce memory."
+      "notes": "Base the YAML on configs/multimodal/qwen3_vl/qwen3_vl_libero.yaml but change: model_path to /home/ubuntu/huggingface/Qwen3-VL-2B-Instruct, libero_data_dir to /home/ubuntu/dataset/hf_vla_64k, output_dir to /tmp/bench_*, data_parallel_mode to fsdp2 (needed for single GPU too), init_device to meta. Keep: attn_implementation flash_attention_2, rmpad_with_pos_ids true, freeze_vit false, max_seq_len 2048. The generate script should read the base YAML, modify fields, and write variants."
     },
     {
       "id": "US-002",
-      "title": "Multi-worker support",
-      "description": "As a developer, I want the page-aligned dataset to work with PyTorch DataLoader multi-worker mode, so that data loading can be parallelized across CPU cores.",
+      "title": "Write e2e training benchmark script",
+      "description": "As a developer, I want a script that runs training jobs across all configs and collects timing metrics, so that I can compare backends automatically.",
       "acceptanceCriteria": [
-        "In __iter__, check torch.utils.data.get_worker_info() — if multi-worker, partition pages: worker gets pages where page_index % num_workers == worker_id",
-        "Supports pickling: __getstate__/__setstate__ exclude ParquetReaderCachePy and page cache, recreate in workers",
-        "Each worker maintains its own independent shuffle buffer",
-        "Unit test: with 4 workers, verify page partitioning assigns disjoint page sets",
-        "Unit test: with 2 workers, verify combined output covers all valid anchors",
-        "Integration test: DataLoader with num_workers=4, batch_size=8 produces correct batch shapes",
+        "New script scripts/benchmark_e2e_training.py that iterates over generated YAML configs in configs/multimodal/qwen3_vl/bench/",
+        "For each config: launches training via torchrun --nproc_per_node=1 tasks/omni/train_qwen_vl_libero.py --config <yaml>, captures stdout/stderr",
+        "Extracts timing: steps/sec (from training output or wall clock / steps), samples/sec (steps/sec * micro_batch_size), total wall-clock time for 50 steps",
+        "Captures peak GPU memory via nvidia-smi or torch.cuda.max_memory_allocated after each run",
+        "If run OOMs (non-zero exit or 'CUDA out of memory' in output), logs OOM and skips larger batch sizes for that backend",
+        "Saves results to benchmarks/e2e_training_results.csv with columns: backend, micro_batch_size, steps_per_sec, samples_per_sec, wall_clock_sec, peak_gpu_mem_mb, status",
         "Tests pass"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "Page partitioning: given N pages and W workers, worker w gets pages at indices w, w+W, w+2W, ... This is simple and balanced. Each worker has its own shuffle buffer and page cache. __getstate__ should exclude _reader_cache, _page_cache, and _shuffle_buffer. __setstate__ recreates _reader_cache via ParquetReaderCachePy().preload(file_paths)."
+      "notes": "Training command: torchrun --nproc_per_node=1 tasks/omni/train_qwen_vl_libero.py --config configs/multimodal/qwen3_vl/bench/<yaml>. Parse training output for per-step timing — look for patterns like 'step X/50' or throughput logging. Exclude first 10 steps as warmup, measure steps 10-50 (40 steps) for stable timing. Run backends in ascending batch size order; stop when OOM. Clean up /tmp/bench_* output dirs between runs to avoid disk pressure. GPU: single H100 80GB."
     },
     {
       "id": "US-003",
-      "title": "Integration with training loop",
-      "description": "As a user running train_qwen_vl_libero.py, I want the page-aligned dataset as the default backend while keeping existing backends available.",
+      "title": "Run the full e2e training benchmark",
+      "description": "As a developer, I want to run the benchmark to completion and collect results for both backends across all viable batch sizes.",
       "acceptanceCriteria": [
-        "Add youmu_page_aligned as a valid libero_dataset_backend option in build_libero_dataset() in tasks/omni/train_qwen_vl_libero.py",
-        "Change default value of libero_dataset_backend from 'youmu' to 'youmu_page_aligned'",
-        "DataLoader created with shuffle=False when backend is youmu_page_aligned (shuffling is internal via page shuffle + buffer)",
-        "LiberoYoumuPageAlignedDataset provides __len__ returning total valid anchor count for training step calculation",
-        "Existing collators work unchanged since each yielded sample matches the standard dict format",
-        "Smoke test: 10 training steps with --libero_dataset_backend youmu_page_aligned complete without error",
-        "Tests pass"
+        "Run scripts/benchmark_e2e_training.py to completion",
+        "Results CSV contains data for both backends across at least 4 batch sizes each",
+        "OOM boundary identified for each backend (largest successful batch size recorded)",
+        "Results saved to benchmarks/e2e_training_results.csv"
       ],
       "priority": 3,
-      "passes": true,
-      "notes": "build_libero_dataset() in tasks/omni/train_qwen_vl_libero.py currently supports youmu, lerobot, lance (default youmu). Add youmu_page_aligned and change default. Key: DataLoader must use shuffle=False for IterableDataset. Check where DataLoader is created and add conditional. HuggingFace Trainer supports IterableDataset but needs __len__ for max_steps calculation — the dataset should compute this from episode metadata (same as LiberoYoumuDataset.anchors count)."
+      "passes": false,
+      "notes": "This will take a while — 50 steps per config, up to 14 configs (7 batch sizes × 2 backends). Expect ~2-5 min per config. Run in tmux. Some large batch sizes will OOM quickly. Total runtime estimate: 30-60 minutes."
     },
     {
       "id": "US-004",
-      "title": "Correctness validation",
-      "description": "As a developer, I want to verify that the page-aligned dataset produces the exact same set of samples as the row-range dataset, so that training semantics are preserved.",
+      "title": "Write benchmark report",
+      "description": "As a developer, I want a report summarizing the e2e training throughput comparison so that the impact of page-aligned data loading on real training is clear.",
       "acceptanceCriteria": [
-        "Test iterates both LiberoYoumuDataset (all indices) and LiberoYoumuPageAlignedDataset (full epoch), collects all (frame_index, episode_index) pairs, verifies the sets are identical",
-        "Test that for 100 random anchor frames, tensors (state, action, image) from page-aligned match row-range (torch.allclose for floats, exact match for images)",
-        "Test shuffle buffer randomness: first 1000 yielded frame_indices are not in sorted order",
-        "Test page cache correctness: edge anchors (first/last valid anchor in a page) produce correct obs/pred windows matching row-range output",
-        "Tests pass"
+        "Report at benchmarks/e2e_training_benchmark_report.md",
+        "Table: steps/sec, samples/sec, wall-clock time, peak GPU memory per (backend, batch_size)",
+        "Analysis: at which batch sizes does data loading become the bottleneck vs GPU compute",
+        "Analysis: maximum batch size before OOM for each backend",
+        "Analysis: peak GPU memory comparison between backends",
+        "Conclusion: overall training speedup (or lack thereof) from page-aligned data loading"
       ],
       "priority": 4,
-      "passes": true,
-      "notes": "These are integration tests that require the real dataset at /home/ubuntu/dataset/hf_vla_64k. For the full-epoch comparison, iterate LiberoYoumuPageAlignedDataset completely and collect frame_index set. Compare with set(anchor[0] for anchor in LiberoYoumuDataset.anchors). For tensor comparison, create both datasets, pick 100 random frame_indices from the page-aligned output, look up same indices in row-range dataset, and compare tensors."
-    },
-    {
-      "id": "US-005",
-      "title": "Unconstrained benchmark",
-      "description": "As a developer, I want to benchmark page-aligned against row-range Youmu and LeRobot without memory constraints to establish baseline throughput.",
-      "acceptanceCriteria": [
-        "Add youmu_page_aligned as a valid backend in scripts/benchmark_data_loading.py (create dataset via LiberoYoumuPageAlignedDataset, use iter-based benchmarking for IterableDataset)",
-        "Run benchmark with --backends youmu youmu_page_aligned lerobot, standard sweep (num_workers=[0,2,4,8], obs_lens=[1,2,4], batch_sizes=[4,8], iterations=200)",
-        "Save results to benchmarks/page_aligned_unconstrained_results.csv",
-        "Tests pass"
-      ],
-      "priority": 5,
-      "passes": true,
-      "notes": "The benchmark script currently iterates DataLoader via for-loop which works for both map-style and iterable datasets. However, IterableDataset ignores DataLoader's shuffle param — make sure shuffle=False is passed for youmu_page_aligned. Also note: IterableDataset with num_workers>0 means each worker iterates independently, so the effective iteration rate scales with workers. Add create_youmu_page_aligned_dataset() factory function alongside existing create_youmu_dataset()."
-    },
-    {
-      "id": "US-006",
-      "title": "Memory-constrained benchmark",
-      "description": "As a developer, I want to run the cgroup memory-constrained benchmark with all 3 backends to demonstrate page-aligned throughput stability under memory pressure.",
-      "acceptanceCriteria": [
-        "Update scripts/benchmark_memory_sweep.sh to support 3 backends (youmu, youmu_page_aligned, lerobot)",
-        "Run sweep across RAM limits [2G, 4G, 8G, 16G, 32G] with all 3 backends",
-        "Save results to benchmarks/memory_constrained_page_aligned/",
-        "Generate analysis via scripts/analyze_memory_benchmark.py",
-        "Results show page-aligned throughput stable across RAM limits while row-range degrades"
-      ],
-      "priority": 6,
-      "passes": true,
-      "notes": "The sweep script already supports --backends flag. Just need to ensure benchmark_data_loading.py recognizes youmu_page_aligned. Drop page cache before each backend run (already implemented). Use iterations=50 for reasonable runtime. Skip 1G limit since both youmu backends need ~800MB base."
-    },
-    {
-      "id": "US-007",
-      "title": "Write final benchmark report",
-      "description": "As a developer, I want a comprehensive report comparing all 3 backends across unconstrained and memory-constrained scenarios.",
-      "acceptanceCriteria": [
-        "Report at benchmarks/page_aligned_benchmark_report.md includes both unconstrained and constrained results",
-        "Summary table: throughput (best config) per backend per RAM limit",
-        "Analysis: crossover point where page-aligned exceeds LeRobot under memory pressure",
-        "Analysis: I/O amplification comparison across backends and RAM limits",
-        "Conclusion with recommendation on when to use each backend"
-      ],
-      "priority": 7,
-      "passes": true,
-      "notes": "Combine data from US-005 (unconstrained) and US-006 (constrained). Expected findings: unconstrained — page-aligned similar to or slightly better than row-range youmu, LeRobot fastest. Constrained — page-aligned stable, row-range youmu degrades severely, LeRobot degrades moderately. Crossover likely at 4-8G."
+      "passes": false,
+      "notes": "Expected pattern: at small batch sizes (bs=1,2), data loading dominates and page-aligned should show clear speedup. At large batch sizes (bs=16+), GPU compute dominates and both backends should converge to similar steps/sec. The crossover point reveals when data loading optimization stops mattering. If both backends OOM at the same batch size, GPU memory usage is model-dominated (not data-dominated)."
     }
   ]
 }
