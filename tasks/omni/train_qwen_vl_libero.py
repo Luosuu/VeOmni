@@ -17,7 +17,7 @@ from veomni.data import (
     LiberoActionPackingCollator,
     build_dataloader,
 )
-from veomni.data.dataset import MappingDataset
+from veomni.data.dataset import MappingDataset, TransformIterableDataset
 from veomni.data.multimodal.data_transform import (
     load_libero_task_descriptions,
     process_libero_sample_qwen3_vl,
@@ -113,8 +113,8 @@ class MyDataArguments(DataArguments):
         metadata={"help": "Chunk index for multi-chunk datasets. None loads all chunks."},
     )
     libero_dataset_backend: str = field(
-        default="youmu",
-        metadata={"help": "Dataset backend for LIBERO data. Options: youmu, lerobot, lance."},
+        default="youmu_page_aligned",
+        metadata={"help": "Dataset backend for LIBERO data. Options: youmu, youmu_page_aligned, lerobot, lance."},
     )
     libero_lance_dir: str = field(
         default="",
@@ -134,7 +134,7 @@ def build_libero_dataset(
     """Build a LIBERO dataset using the specified backend.
 
     Args:
-        backend: One of "youmu", "lerobot", "lance".
+        backend: One of "youmu", "youmu_page_aligned", "lerobot", "lance".
         data_dir: Root directory of the LIBERO dataset.
         obs_len: Number of observation frames (including anchor).
         pred_len: Number of future prediction frames.
@@ -149,6 +149,18 @@ def build_libero_dataset(
         from youmu.libero_dataset import LiberoYoumuDataset
 
         return LiberoYoumuDataset(
+            data_dir=data_dir,
+            obs_len=obs_len,
+            pred_len=pred_len,
+            chunk_index=chunk_index,
+            state_column="observation.state",
+            action_column="action",
+            image_column="observation.images.image",
+        )
+    elif backend == "youmu_page_aligned":
+        from youmu.libero_dataset import LiberoYoumuPageAlignedDataset
+
+        return LiberoYoumuPageAlignedDataset(
             data_dir=data_dir,
             obs_len=obs_len,
             pred_len=pred_len,
@@ -207,7 +219,7 @@ def build_libero_dataset(
             pred_len=pred_len,
         )
     else:
-        raise ValueError(f"Unknown libero_dataset_backend: {backend}. Must be one of: youmu, lerobot, lance.")
+        raise ValueError(f"Unknown libero_dataset_backend: {backend}. Must be one of: youmu, youmu_page_aligned, lerobot, lance.")
 
 
 @dataclass
@@ -338,7 +350,14 @@ def main():
         meta_path=meta_path,
     )
     logger.info_rank0(f"Using LIBERO dataset backend: {args.data.libero_dataset_backend}")
-    train_dataset = MappingDataset(data=libero_dataset, transform=transform)
+    # Use TransformIterableDataset for iterable backends (shuffling is internal),
+    # MappingDataset for map-style backends (shuffling via sampler in DataLoader).
+    from torch.utils.data import IterableDataset as _IterableDataset
+
+    if isinstance(libero_dataset, _IterableDataset):
+        train_dataset = TransformIterableDataset(data=libero_dataset, transform=transform)
+    else:
+        train_dataset = MappingDataset(data=libero_dataset, transform=transform)
     dataset_length = len(train_dataset) / args.train.data_parallel_size
     # Compute train steps: dataset_length / dataloader_batch_size, capped by max_steps
     import math

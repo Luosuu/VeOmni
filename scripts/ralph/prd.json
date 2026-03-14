@@ -37,7 +37,7 @@
         "Tests pass"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Page partitioning: given N pages and W workers, worker w gets pages at indices w, w+W, w+2W, ... This is simple and balanced. Each worker has its own shuffle buffer and page cache. __getstate__ should exclude _reader_cache, _page_cache, and _shuffle_buffer. __setstate__ recreates _reader_cache via ParquetReaderCachePy().preload(file_paths)."
     },
     {
@@ -54,7 +54,7 @@
         "Tests pass"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "build_libero_dataset() in tasks/omni/train_qwen_vl_libero.py currently supports youmu, lerobot, lance (default youmu). Add youmu_page_aligned and change default. Key: DataLoader must use shuffle=False for IterableDataset. Check where DataLoader is created and add conditional. HuggingFace Trainer supports IterableDataset but needs __len__ for max_steps calculation — the dataset should compute this from episode metadata (same as LiberoYoumuDataset.anchors count)."
     },
     {

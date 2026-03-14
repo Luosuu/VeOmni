@@ -62,6 +62,31 @@ class MappingDataset(Dataset):
             return self._data[index]
 
 
+class TransformIterableDataset(IterableDataset):
+    """Wraps a PyTorch IterableDataset and applies a transform to each sample.
+
+    Unlike ``MappingDataset`` (which uses ``__getitem__``), this wrapper
+    iterates over the underlying dataset and applies the transform on yield.
+    It also exposes ``__len__`` by delegating to the wrapped dataset so that
+    training step calculations work.
+    """
+
+    def __init__(self, data: "IterableDataset", transform: Optional[Callable] = None):
+        self._data = data
+        self._transform = transform
+
+    def __len__(self) -> int:
+        """Delegate to the wrapped dataset's __len__ for step calculation."""
+        return len(self._data)
+
+    def __iter__(self):
+        for sample in self._data:
+            if self._transform is not None:
+                yield self._transform(sample)
+            else:
+                yield sample
+
+
 class IterativeDataset(IterableDataset):
     def __init__(self, data: "HFIterableDataset", transform: Optional[Callable] = None):
         self._data = data

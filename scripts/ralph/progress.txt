@@ -2,36 +2,61 @@
 Started: 2026-03-14
 
 ## Codebase Patterns
-- Memory-constrained benchmarks use `sudo systemd-run --scope -p MemoryMax=<limit> -p MemorySwapMax=0` (cgroup v2, no cgexec)
-- Drop page cache before benchmarks: `sudo sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'`
-- Shell test scripts use `grep -qF --` to safely match strings starting with `--`
-- Benchmark scripts live in `scripts/`, tests in `tests/`
-- `benchmark_data_loading.py` supports CLI overrides: `--num-workers`, `--obs-lens`, `--batch-sizes`, `--iterations`, `--warmup`
+- Youmu's `read_multi_column_aligned_py` returns **flat FloatArray** for LIST<FLOAT32> columns (not ListArray). Access rows via `arr[row * dim : (row+1) * dim].to_pylist()`. Image (BYTE_ARRAY) columns return BinaryArray with direct index access.
+- The test fixture uses column names `observation.state`, `action`, `observation.images.image` (not the defaults `state`, `actions`, `image`). Always pass explicit column names when testing with fixtures.
+- `get_shuffled_multi_column_indices_dataset_level(file_paths, ref_col_idx)` returns shuffled `(file_idx, rg_idx, page_idx)` triples. Triples may repeat — de-duplicate with `set()`.
+- `read_multi_column_aligned_py` does NOT take a cache parameter (unlike `read_multi_column_row_range_py`). It opens the file directly each call.
+- Within a file, episodes are packed contiguously: `global_frame = file_global_base + file_row` where `file_global_base = ep.start_frame - ep_row_offset`.
+- Use `LiberoYoumuDataset._load_chunk()` as a static method to reuse chunk-loading logic across dataset classes.
+- Multi-worker page partitioning must use deterministic assignment (sorted unique pages) since `get_shuffled_multi_column_indices_dataset_level` returns different random orders per call.
+- When wrapping an `IterableDataset` with a transform, use `TransformIterableDataset` (not `MappingDataset`). `build_dataloader` auto-handles IterableDataset (skips sampler).
 
 ---
 
 ## 2026-03-14 - US-001
-- Implemented `scripts/benchmark_memory_constrained.sh` wrapper script
-- Created `tests/test_benchmark_memory_constrained.sh` with 4 CLI tests (help, missing args, etc.)
-- Smoke tested with `--memory-limit 32G --quick --backends youmu` - works end-to-end
-- Files changed: `scripts/benchmark_memory_constrained.sh`, `tests/test_benchmark_memory_constrained.sh`
+- Implemented `LiberoYoumuPageAlignedDataset(IterableDataset)` in `submodules/youmu/python/youmu/libero_dataset.py`
+- Key design: page-level shuffled iteration → LRU page cache for edge anchors → shuffle buffer for sample randomization → finalize (decode images) on yield
+- Pre-computes page metadata at init by reading reference column pages to determine row counts and global frame mapping
+- Groups anchors by page for efficient processing during iteration
+- Stores raw PNG bytes in shuffle buffer, decodes only on yield to minimize memory
+- Files changed:
+  - `submodules/youmu/python/youmu/libero_dataset.py` (added ~470 lines)
+  - `submodules/youmu/test/test_python.py` (added 16 tests, ~340 lines)
 - **Learnings for future iterations:**
-  - `grep -qF --` is needed when matching strings that start with `--` to avoid grep treating them as options
-  - systemd-run with `--scope` creates transient cgroups that auto-cleanup
-  - OOM kill from cgroup returns exit code 137 (128 + SIGKILL=9)
+  - `read_multi_column_aligned_py` returns flat arrays for list columns — need to manually slice by dimension
+  - The first column in `column_indices` list is the reference for page alignment
+  - Page cache size of 3 is sufficient for typical obs_len/pred_len (2/4) since edge anchors need at most current + 1 neighbor page
+  - Fixture has 4 pages (2 RGs × 2 pages each), with 49+1 rows per RG — useful for testing edge cases
 ---
 
 ## 2026-03-14 - US-002
-- Implemented `scripts/benchmark_memory_sweep.sh` that iterates over RAM limits [1G, 2G, 4G, 8G, 16G, 32G]
-- Runs each backend separately per RAM limit so OOM in one doesn't skip the other
-- Merges per-backend CSV results into `benchmarks/memory_constrained/mem_<limit>.csv`
-- Handles OOM (exit 137) gracefully, logs and continues
-- Prints elapsed time and summary at end
-- Added CLI override args to `scripts/benchmark_data_loading.py`: `--num-workers`, `--obs-lens`, `--batch-sizes`, `--iterations`, `--warmup`
-- Created `tests/test_benchmark_memory_sweep.sh` with 9 tests (help, RAM limits, backends, iterations, unknown args, executable, references, OOM handling, output dir)
-- Files changed: `scripts/benchmark_memory_sweep.sh` (new), `tests/test_benchmark_memory_sweep.sh` (new), `scripts/benchmark_data_loading.py` (CLI args)
+- Added multi-worker DataLoader support to `LiberoYoumuPageAlignedDataset`
+- Deterministic page partitioning: sorted unique pages, assigned by `page_index % num_workers == worker_id`
+- Added `__getstate__`/`__setstate__` to exclude runtime-only objects (`_page_cache`, `_shuffle_buffer`)
+- Each worker independently maintains its own shuffle buffer and page cache
+- Files changed:
+  - `submodules/youmu/python/youmu/libero_dataset.py` (added `__getstate__`, `__setstate__`, worker partitioning in `__iter__`)
+  - `submodules/youmu/test/test_python.py` (added 8 tests: pickling, state exclusion, 4-worker partitioning, 2-worker coverage, DataLoader batch shapes, DataLoader all samples, DataLoader with images, single-worker equivalence)
 - **Learnings for future iterations:**
-  - Sweep script runs backends separately within each RAM limit to isolate OOM failures
-  - `benchmark_data_loading.py` CLI overrides default to None and take precedence over quick/full defaults when set
-  - Use `tail -n +2` to append CSV data without header for merging multiple backend results
+  - `get_shuffled_multi_column_indices_dataset_level` returns different random orders each call — page partitioning must use deterministic assignment (sorted unique pages), not position in shuffled list
+  - Mock `torch.utils.data.get_worker_info` with `unittest.mock.patch` for simulating multi-worker in unit tests
+  - Real DataLoader multi-worker tests (num_workers>0) work correctly with the fixture dataset
+---
+
+## 2026-03-14 - US-003
+- Integrated `youmu_page_aligned` backend into the training loop (`tasks/omni/train_qwen_vl_libero.py`)
+- Added `TransformIterableDataset` wrapper in `veomni/data/dataset.py` for applying transforms to IterableDataset
+- Changed default `libero_dataset_backend` from `youmu` to `youmu_page_aligned`
+- Training loop auto-detects IterableDataset and uses `TransformIterableDataset` instead of `MappingDataset`
+- `build_dataloader` already handles IterableDataset correctly (skips sampler, no shuffle)
+- `LiberoYoumuPageAlignedDataset.__len__` returns anchor count for step calculation
+- Files changed:
+  - `tasks/omni/train_qwen_vl_libero.py` (added youmu_page_aligned branch, IterableDataset detection)
+  - `veomni/data/dataset.py` (added TransformIterableDataset class)
+  - `tests/data/test_train_qwen_vl_libero_integration.py` (15 tests: wrapper, build_libero_dataset, default, DataLoader compat)
+- **Learnings for future iterations:**
+  - `build_dataloader` in `veomni/data/data_loader.py` already handles IterableDataset — skips sampler creation (line 137), no explicit `shuffle=False` needed since DataLoader defaults to no shuffle without a sampler
+  - `MappingDataset` uses `__getitem__` and cannot wrap an `IterableDataset` — need `TransformIterableDataset` for iterable backends
+  - `MyDataArguments` requires `train_path` from parent `DataArguments` — must pass it when testing defaults
+  - Episode-per-file JSONL metadata is simpler to set up in test fixtures than the parquet metadata format (which requires `data/file_index`, `dataset_from_index`, `dataset_to_index` columns)
 ---
