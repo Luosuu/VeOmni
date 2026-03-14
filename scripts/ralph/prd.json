@@ -62,7 +62,7 @@
         "Conclusion: overall training speedup (or lack thereof) from page-aligned data loading"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "Expected pattern: at small batch sizes (bs=1,2), data loading dominates and page-aligned should show clear speedup. At large batch sizes (bs=16+), GPU compute dominates and both backends should converge to similar steps/sec. The crossover point reveals when data loading optimization stops mattering. If both backends OOM at the same batch size, GPU memory usage is model-dominated (not data-dominated)."
     }
   ]

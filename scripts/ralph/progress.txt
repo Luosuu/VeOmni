@@ -64,3 +64,14 @@ Started: 2026-03-14
   - Python subprocess output is buffered — benchmark output appears only after completion when piped
   - No OOM boundary on H100 80GB with Qwen3-VL-2B at batch sizes up to 64 — model size (~21GB) dominates memory
 ---
+
+## 2026-03-14 - US-004
+- Created benchmark report at benchmarks/e2e_training_benchmark_report.md
+- Report contains: full comparison table, bottleneck analysis (crossover at bs16), OOM analysis (no OOM), GPU memory comparison, conclusions
+- Key findings: youmu_page_aligned is 1.5-2.4x faster at bs>=16; lerobot is ~15% faster at bs<=8; GPU memory ~21GB model-dominated for both
+- Files changed: benchmarks/e2e_training_benchmark_report.md, scripts/ralph/prd.json, scripts/ralph/progress.txt
+- **Learnings for future iterations:**
+  - The crossover point where data loading becomes the bottleneck is between bs=8 and bs=16 for this model/dataset combo
+  - GPU memory on H100 with Qwen3-VL-2B is entirely model-dominated (~21GB) — batch size and backend have negligible impact on VRAM
+  - youmu's advantage is most pronounced at bs=32 (2.37x) — this is where lerobot's data pipeline serialization overhead is maximized
+---
