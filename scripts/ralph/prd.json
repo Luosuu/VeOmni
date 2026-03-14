@@ -1,67 +1,70 @@
 {
   "project": "VeOmni",
   "branchName": "tianle/qwen3-vla",
-  "description": "Youmu Multi-Column Row-Range Data Loading - Reduce I/O syscalls by reading multiple columns per call instead of one column per call",
+  "description": "Memory-Constrained Data Loading Benchmark - Use cgroups to limit RAM and measure how throughput degrades for LeRobot vs Youmu under memory pressure",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Investigate Rust API readiness for multi-column row-range reads",
-      "description": "As a developer, I need to verify that read_multi_column_row_range_py works correctly with Libero's column types (LIST<FLOAT32> for state/action, BYTE_ARRAY for image bytes) so that I know what Rust changes (if any) are needed.",
+      "title": "Memory-constrained benchmark wrapper script",
+      "description": "As a developer, I want a wrapper script that runs the existing benchmark inside a memory-limited cgroup, so that I can measure throughput under realistic memory pressure.",
       "acceptanceCriteria": [
-        "Write a test script that calls read_multi_column_row_range_py with [state_col_idx, action_col_idx, image_bytes_col_idx] on the hf_vla_64k dataset and verifies returned arrays have correct types and row counts",
-        "Test reading with mixed column types in a single call: two LIST<FLOAT32> columns (state, action) and one BYTE_ARRAY column (image bytes)",
-        "Test reading across row group boundaries (range that spans two row groups)",
-        "Document any Rust API gaps or bugs found in progress.txt",
-        "If Rust changes are needed, document specifics in progress.txt with proposed fixes",
+        "New script scripts/benchmark_memory_constrained.sh that accepts --memory-limit (e.g. 4G) and passes remaining args to scripts/benchmark_data_loading.py",
+        "Uses sudo systemd-run --scope -p MemoryMax=<limit> -p MemorySwapMax=0 to enforce hard memory limit with no swap",
+        "Drops page cache before the run via sudo sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'",
+        "Prints the memory limit and confirms cgroup is active before starting",
+        "Returns non-zero exit code if systemd-run fails (e.g. insufficient permissions)",
+        "Script prints usage when called with --help, exits with error when called without --memory-limit",
         "Tests pass"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Key files: submodules/youmu/src/lib.rs (Rust APIs), submodules/youmu/python/youmu/libero_dataset.py (column index discovery via _find_physical_column_index). Dataset at /home/ubuntu/dataset/hf_vla_64k. Column names: observation.state (LIST<FLOAT32>), action (LIST<FLOAT32>), observation.images.image (struct with bytes child as BYTE_ARRAY). Use state_column='observation.state', action_column='action', image_column='observation.images.image' with child_name='bytes'. FINDING: read_multi_column_row_range_py does NOT support LIST columns correctly — returns flat leaf values instead of ListArrays. See progress.txt for proposed fixes."
+      "notes": "System uses cgroup v2 with systemd-run available (cgexec is NOT installed). Use: sudo systemd-run --scope -p MemoryMax=4G -p MemorySwapMax=0 -- python scripts/benchmark_data_loading.py <args>. The --scope flag runs the process in a transient cgroup cleaned up automatically. MemorySwapMax=0 prevents swap fallback so we get OOM kill instead of slow thrashing. Must check sudo access upfront. Python env: . .venv/bin/activate"
     },
     {
       "id": "US-002",
-      "title": "Multi-column row-range reads in LiberoYoumuDataset",
-      "description": "As a developer, I want LiberoYoumuDataset.__getitem__ to read columns in fewer I/O calls using read_multi_column_row_range_py, so that I/O syscalls are reduced per sample.",
+      "title": "Full sweep script across RAM limits",
+      "description": "As a developer, I want a script that runs the benchmark across all RAM limits and configurations in one command, so that I get a complete dataset unattended.",
       "acceptanceCriteria": [
-        "__getitem__ uses read_multi_column_row_range_py to read state+image together in one call for the obs window, and action in a separate call for the pred window (2 calls instead of 3)",
-        "__getitem__ returns the same dict structure: observation.state (float32, (obs_len, state_dim)), action (float32, (pred_len, action_dim)), observation.images.image (uint8, (obs_len, H, W, 3)), plus frame_index and episode_index",
-        "Existing dataset unit tests and integration tests still pass with no changes",
-        "A new unit test verifies multi-column read produces identical outputs to the old per-column reads for at least 100 random indices",
+        "New script scripts/benchmark_memory_sweep.sh that iterates over RAM limits [1G, 2G, 4G, 8G, 16G, 32G]",
+        "For each RAM limit, drops page cache then runs benchmark_memory_constrained.sh with --backends youmu lerobot and sweep params: num_workers=[0,2,4,8], obs_lens=[1,2,4], batch_sizes=[4,8]",
+        "Each RAM limit saves results to benchmarks/memory_constrained/mem_<limit>.csv",
+        "If a run is OOM-killed (exit code 137), logs the failure and continues to next configuration",
+        "Script prints elapsed time and summary after completion",
+        "Uses fewer iterations (50 instead of 200) to keep total runtime reasonable",
         "Tests pass"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "Current __getitem__ makes 3 separate calls: _read_list_column_range for state, _read_list_column_range for action, _read_image_range for image. The obs window is [anchor - obs_len + 1, anchor] inclusive and pred window is [anchor + 1, anchor + pred_len] inclusive. State and image share the obs window range, so they can be read together in one multi-column call. Action uses the pred window range in a separate call. This reduces from 3 calls to 2. Import read_multi_column_row_range_py from youmu."
+      "notes": "Total configs per RAM limit: 2 backends × 4 workers × 3 obs_lens × 2 batch_sizes = 48 configs. Across 6 RAM limits = 288 total configs. With 50 iterations each this should be manageable. OOM kill returns exit code 137 (128 + SIGKILL=9). The script should run each backend separately within each RAM limit so that a youmu OOM doesn't skip the lerobot run."
     },
     {
       "id": "US-003",
-      "title": "I/O efficiency benchmark",
-      "description": "As a developer, I want to measure and compare I/O efficiency between the old per-column reads and new multi-column reads, plus the lerobot baseline, so that we can quantify the improvement.",
+      "title": "Aggregate results and write report",
+      "description": "As a developer, I want a Python script that aggregates per-RAM-limit CSVs into a single report showing how throughput changes with memory pressure for each backend.",
       "acceptanceCriteria": [
-        "Extend scripts/benchmark_data_loading.py to measure I/O bytes read from disk via /proc/self/io read_bytes counter before and after each benchmark run",
-        "Compute I/O amplification ratio (bytes_read / bytes_needed) where bytes_needed is sum of tensor sizes returned",
-        "Add io_bytes_read, payload_bytes, io_amplification_ratio columns to the output CSV",
-        "New benchmark metrics have unit tests verifying correct calculation",
+        "New script scripts/analyze_memory_benchmark.py that reads all CSVs from benchmarks/memory_constrained/",
+        "Produces combined CSV benchmarks/memory_constrained/combined_results.csv with a memory_limit column",
+        "Generates markdown report benchmarks/memory_constrained_benchmark_report.md with: summary table of best throughput per backend per RAM limit, full results table, analysis of crossover point, OOM failure notes",
+        "Unit tests for CSV aggregation and report generation logic",
         "Tests pass"
       ],
       "priority": 3,
-      "passes": true,
-      "notes": "Read /proc/self/io before and after benchmark to get read_bytes delta. Useful payload = sum of all tensor element counts * element byte size across all samples. The benchmark already supports youmu and lerobot backends. Since US-002 modifies LiberoYoumuDataset in-place, the existing youmu backend will automatically use the new multi-column reads."
+      "passes": false,
+      "notes": "Read the memory limit from the filename (mem_1G.csv -> 1G). The summary table should show for each RAM limit: youmu samples/sec (best config), lerobot samples/sec (best config), ratio. Highlight the crossover point where youmu >= lerobot. Note which RAM limits had OOM failures and for which backend."
     },
     {
       "id": "US-004",
-      "title": "Run full benchmark and write report",
-      "description": "As a developer, I want a benchmark report comparing lerobot vs youmu (with multi-column reads) so that the I/O efficiency improvement is documented.",
+      "title": "Run the full memory-constrained benchmark",
+      "description": "As a developer, I want to run the full sweep and produce the final report so that we have concrete data on memory pressure impact.",
       "acceptanceCriteria": [
-        "Run the full benchmark sweep with both backends (lerobot, youmu)",
-        "Report includes: samples/sec, I/O amplification ratio, time-to-first-sample, peak RSS for each backend across multiple configurations",
-        "Report saved to benchmarks/multi_column_benchmark_report.md",
-        "Results demonstrate measurable I/O efficiency improvement for multi-column reads"
+        "Run scripts/benchmark_memory_sweep.sh to completion (all 6 RAM limits)",
+        "Report at benchmarks/memory_constrained_benchmark_report.md contains results for at least 4 of 6 RAM limits",
+        "Report clearly shows whether Youmu throughput advantage increases under memory pressure",
+        "Combined CSV has data from all successful runs"
       ],
       "priority": 4,
-      "passes": true,
-      "notes": "Ran benchmark with 48 configs (workers=[0,2,4,8], obs_lens=[1,2,4], batch_sizes=[4,8]) for both youmu and lerobot. Report at benchmarks/multi_column_benchmark_report.md. Key findings: LeRobot 1.2-1.9x faster in throughput but Youmu uses 2-3x less memory. Gap narrows from 1.89x at obs=1 to 1.16x at obs=4."
+      "passes": false,
+      "notes": "Run in tmux to avoid interruption: tmux new-session -d -s bench './scripts/benchmark_memory_sweep.sh'. At 1G limit, both backends may OOM — that's expected and fine. The interesting data points are 2G-16G where LeRobot should degrade while Youmu stays stable."
     }
   ]
 }

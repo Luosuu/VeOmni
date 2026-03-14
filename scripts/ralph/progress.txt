@@ -1,95 +1,37 @@
 # Ralph Progress Log
-Started: Sat Mar 14 05:06:40 UTC 2026
----
+Started: 2026-03-14
 
 ## Codebase Patterns
-- `read_multi_column_row_range_py` now correctly handles both flat AND LIST columns. It detects LIST columns (via `max_rep_level() > 0`) and dispatches to the list-aware reader automatically.
-- Physical column indices: observation.images.image.bytes=0, observation.state=4, action=5 (for hf_vla_64k dataset)
-- `_find_physical_column_index` in `youmu/libero_dataset.py` maps logical column names to physical indices, handling struct and list types
-- Parquet files in hf_vla_64k have 1 row group per file, so cross-RG reads within a single file are not needed
-- Always write test Parquet files with `use_dictionary=False, write_page_index=True` for Youmu compatibility
-- `/proc/self/io` `read_bytes` only counts storage-layer reads — drop caches (`echo 3 > /proc/sys/vm/drop_caches`) for true cold-cache I/O measurement
+- Memory-constrained benchmarks use `sudo systemd-run --scope -p MemoryMax=<limit> -p MemorySwapMax=0` (cgroup v2, no cgexec)
+- Drop page cache before benchmarks: `sudo sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'`
+- Shell test scripts use `grep -qF --` to safely match strings starting with `--`
+- Benchmark scripts live in `scripts/`, tests in `tests/`
+- `benchmark_data_loading.py` supports CLI overrides: `--num-workers`, `--obs-lens`, `--batch-sizes`, `--iterations`, `--warmup`
+
+---
 
 ## 2026-03-14 - US-001
-- Investigated `read_multi_column_row_range_py` Rust API readiness for Libero column types
-- **Key Finding: API gap with LIST columns**
-  - `read_multi_column_row_range_py` works correctly for flat column types (BYTE_ARRAY for images, INT64, FLOAT)
-  - It does NOT work correctly for LIST<FLOAT32> columns (state, action): returns N flat float values instead of N lists
-  - Root cause: `read_multi_column_row_range` uses `read_rows_from_column` which reads physical leaf pages without list offset reconstruction. The list-aware reader `read_list_row_range` uses a separate code path (`read_list_float_page`) that correctly handles list offsets.
-- **Proposed Rust fix for US-002:**
-  - Option A (recommended): Keep using `read_list_row_range_py` for state/action (LIST columns) and `read_multi_column_row_range_py` only for flat columns (images). This means 2→2 calls (no reduction for obs window since state is LIST, but image can use multi-column if combined with other flat columns).
-  - Option B: Extend `read_multi_column_row_range_with_reader` to detect list columns in the schema and dispatch to `read_list_float_page` logic. This would enable true multi-column reads mixing list and flat types.
-  - Option C: Create `read_multi_list_column_row_range_py` that reads multiple LIST columns in one call, reusing offset index parsing.
-- **Practical impact for US-002:** Since state+image share the obs window, and state is a LIST column while image is BYTE_ARRAY, they cannot be combined into a single `read_multi_column_row_range_py` call with correct results. The optimization in US-002 will need to use Option A, B, or C.
-- Files changed: tests/test_multi_column_row_range.py (new, 19 tests)
+- Implemented `scripts/benchmark_memory_constrained.sh` wrapper script
+- Created `tests/test_benchmark_memory_constrained.sh` with 4 CLI tests (help, missing args, etc.)
+- Smoke tested with `--memory-limit 32G --quick --backends youmu` - works end-to-end
+- Files changed: `scripts/benchmark_memory_constrained.sh`, `tests/test_benchmark_memory_constrained.sh`
 - **Learnings for future iterations:**
-  - The multi-column API is a thin wrapper that loops over `read_rows_from_column` per column — it shares offset index parsing but doesn't batch I/O
-  - hf_vla_64k files have 1 row group each, so cross-RG boundary testing requires synthetic fixtures
-  - `_count_physical_columns` handles nested types (struct children count as separate physical columns)
+  - `grep -qF --` is needed when matching strings that start with `--` to avoid grep treating them as options
+  - systemd-run with `--scope` creates transient cgroups that auto-cleanup
+  - OOM kill from cgroup returns exit code 137 (128 + SIGKILL=9)
 ---
 
 ## 2026-03-14 - US-002
-- Implemented multi-column row-range reads in LiberoYoumuDataset
-- **Rust fix:** Extended `read_multi_column_row_range` to detect LIST columns (via `column_desc.max_rep_level() > 0`) and dispatch to the list-aware reader (`read_list_row_range_with_reader`/`read_list_row_range_with_reader_and_offsets`). This was Option B from US-001.
-- **Python changes:** Added `_read_obs_window()` method that reads state (LIST) + image (BYTE_ARRAY) together in one `read_multi_column_row_range_py` call. `__getitem__` now makes 2 calls instead of 3: one for obs window (state+image), one for pred window (action).
-- **Tests:**
-  - 4 new Rust-level tests verifying LIST column support in multi-column reads
-  - 3 new dataset-level tests verifying multi-column `__getitem__` produces identical outputs to per-column reads for 90+ indices
-  - Updated 4 US-001 tests that documented the old broken behavior to assert correct ListArray returns
-- Files changed:
-  - `submodules/youmu/submodules/arrow-rs/parquet/src/file/direct_page.rs` (Rust: LIST column dispatch in multi-column readers)
-  - `submodules/youmu/python/youmu/libero_dataset.py` (Python: `_read_obs_window`, updated `__getitem__`)
-  - `submodules/youmu/test/test_python.py` (7 new tests)
-  - `tests/test_multi_column_row_range.py` (4 updated tests)
-  - `scripts/ralph/prd.json` (US-002 passes: true)
+- Implemented `scripts/benchmark_memory_sweep.sh` that iterates over RAM limits [1G, 2G, 4G, 8G, 16G, 32G]
+- Runs each backend separately per RAM limit so OOM in one doesn't skip the other
+- Merges per-backend CSV results into `benchmarks/memory_constrained/mem_<limit>.csv`
+- Handles OOM (exit 137) gracefully, logs and continues
+- Prints elapsed time and summary at end
+- Added CLI override args to `scripts/benchmark_data_loading.py`: `--num-workers`, `--obs-lens`, `--batch-sizes`, `--iterations`, `--warmup`
+- Created `tests/test_benchmark_memory_sweep.sh` with 9 tests (help, RAM limits, backends, iterations, unknown args, executable, references, OOM handling, output dir)
+- Files changed: `scripts/benchmark_memory_sweep.sh` (new), `tests/test_benchmark_memory_sweep.sh` (new), `scripts/benchmark_data_loading.py` (CLI args)
 - **Learnings for future iterations:**
-  - Parquet LIST columns have `max_rep_level() > 0` in their ColumnDescriptor — this is the reliable way to detect them in Rust
-  - The test fixture `libero_fixture.parquet` uses column names `observation.state`/`action`/`observation.images.image`, NOT the LiberoYoumuDataset defaults `state`/`actions`/`image` — always pass explicit column names when using fixtures
-  - Rust must be installed (`rustup`) and maturin must be available to rebuild Youmu: `PATH="$HOME/.cargo/bin:$PATH" && maturin develop --release`
-  - Generate test fixtures before running tests: `python test/fixtures/generate_test_parquet.py && python test/fixtures/generate_libero_fixture.py`
----
-
-## 2026-03-14 - US-003
-- Extended `scripts/benchmark_data_loading.py` with I/O efficiency metrics
-- **New functions:**
-  - `read_io_bytes()`: reads cumulative `read_bytes` from `/proc/self/io` to measure actual disk I/O
-  - `compute_payload_bytes(batch)`: sums `nelement() * element_size()` across all tensors in a batch
-- **Integration into `benchmark_one_config`:**
-  - Reads `/proc/self/io` before and after timed phase to get `io_bytes_read` delta
-  - Accumulates `payload_bytes` across all batches via `compute_payload_bytes`
-  - Computes `io_amplification_ratio = io_bytes_read / payload_bytes`
-- **CSV output:** Added 3 new columns: `io_bytes_read`, `payload_bytes`, `io_amplification_ratio`
-- **Console output:** Added `io_amp=Nx` to per-config print line
-- **Tests:** 14 new tests in `tests/test_benchmark_io_metrics.py`:
-  - 2 unit tests for `read_io_bytes` (non-negative, monotonic)
-  - 6 unit tests for `compute_payload_bytes` (single tensor, multiple, empty, non-tensor, mixed dtypes)
-  - 5 integration tests for `benchmark_one_config` I/O metrics (presence, non-negative, positive, scaling, ratio correctness)
-  - 1 CSV field coverage test
-- Files changed:
-  - `scripts/benchmark_data_loading.py` (added `read_io_bytes`, `compute_payload_bytes`, updated `benchmark_one_config`, `save_csv`, `run_sweep`)
-  - `tests/test_benchmark_io_metrics.py` (new, 14 tests)
-  - `scripts/ralph/prd.json` (US-003 passes: true)
-- **Learnings for future iterations:**
-  - `/proc/self/io` `read_bytes` counts bytes from the storage layer, not page cache — it's the right counter for measuring actual disk I/O
-  - `torch.Tensor.nelement() * element_size()` gives exact byte size regardless of dtype
-  - The FakeDataset in tests uses in-memory random tensors so `io_bytes_read` may be 0 — tests assert `>= 0` not `> 0`
----
-
-## 2026-03-14 - US-004
-- Ran full benchmark sweep with 48 configurations (workers=[0,2,4,8], obs_lens=[1,2,4], batch_sizes=[4,8]) for both youmu and lerobot backends
-- Generated comprehensive report at `benchmarks/multi_column_benchmark_report.md`
-- **Key results:**
-  - LeRobot 1.2-1.9x faster throughput (gap narrows with larger obs_len: 1.89x at obs=1 → 1.16x at obs=4)
-  - Youmu uses 2-3x less memory (~800 MB vs 1.3-2.4 GB)
-  - Both backends scale linearly with workers
-  - I/O amplification mostly 0x due to page cache warming; sub-1.0x ratios on cold-cache lerobot runs
-  - Multi-column optimization (3→2 calls) shows modest improvement; bigger impact expected on cold cache / larger-than-RAM datasets
-- Files changed:
-  - `benchmarks/multi_column_benchmark_results.csv` (new, 48-config benchmark data)
-  - `benchmarks/multi_column_benchmark_report.md` (new, full analysis report)
-  - `scripts/ralph/prd.json` (US-004 passes: true)
-- **Learnings for future iterations:**
-  - `/proc/self/io` `read_bytes` only counts storage-layer reads, not page cache hits — for accurate I/O amplification, drop caches with `echo 3 > /proc/sys/vm/drop_caches` (requires root)
-  - Youmu runs before lerobot warm the page cache, making lerobot's io_bytes_read artificially low for later configs — run backends in separate processes or drop caches between them for accurate per-backend I/O measurement
-  - The full 120-config sweep takes 30+ minutes; 48 configs with targeted parameters is sufficient for a meaningful comparison report
+  - Sweep script runs backends separately within each RAM limit to isolate OOM failures
+  - `benchmark_data_loading.py` CLI overrides default to None and take precedence over quick/full defaults when set
+  - Use `tail -n +2` to append CSV data without header for merging multiple backend results
 ---

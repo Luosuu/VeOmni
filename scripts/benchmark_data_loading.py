@@ -486,6 +486,39 @@ def main():
         choices=["youmu", "lerobot"],
         help="Backends to benchmark",
     )
+    parser.add_argument(
+        "--num-workers",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Override num_workers values to sweep (e.g. --num-workers 0 2 4 8)",
+    )
+    parser.add_argument(
+        "--obs-lens",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Override obs_len values to sweep (e.g. --obs-lens 1 2 4)",
+    )
+    parser.add_argument(
+        "--batch-sizes",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Override batch_size values to sweep (e.g. --batch-sizes 4 8)",
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=None,
+        help="Override number of timed iterations per config",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=None,
+        help="Override number of warmup iterations per config",
+    )
     args = parser.parse_args()
 
     if args.quick:
@@ -500,6 +533,18 @@ def main():
         batch_sizes = ALL_BATCH_SIZES
         num_iterations = NUM_ITERATIONS
         warmup_iterations = WARMUP_ITERATIONS
+
+    # CLI overrides take precedence over quick/full defaults
+    if args.num_workers is not None:
+        num_workers_list = args.num_workers
+    if args.obs_lens is not None:
+        obs_lens = args.obs_lens
+    if args.batch_sizes is not None:
+        batch_sizes = args.batch_sizes
+    if args.iterations is not None:
+        num_iterations = args.iterations
+    if args.warmup is not None:
+        warmup_iterations = args.warmup
 
     print("=" * 60)
     print("Data Loading Benchmark: Youmu vs LeRobot")
