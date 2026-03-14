@@ -37,8 +37,8 @@ class TestLoadBaseYaml:
         assert config["train"]["max_steps"] == 50
         assert config["train"]["use_wandb"] is False
         assert config["train"]["rmpad_with_pos_ids"] is True
-        assert config["train"]["data_parallel_mode"] == "fsdp2"
-        assert config["train"]["init_device"] == "meta"
+        assert config["train"]["data_parallel_mode"] == "ddp"
+        assert config["train"]["init_device"] == "cuda"
         assert config["train"]["freeze_vit"] is False
 
 

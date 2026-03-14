@@ -7,7 +7,9 @@ Started: 2026-03-14
 - Training configs follow the pattern: model/data/train top-level sections
 - Valid libero_dataset_backend values: youmu, youmu_page_aligned, lerobot, lance
 - youmu_page_aligned uses /home/ubuntu/dataset/hf_vla_64k, lerobot uses /home/ubuntu/dataset/hf_vla
-- Training launch: `torchrun --nproc_per_node=1 tasks/omni/train_qwen_vl_libero.py --config <yaml>`
+- Training launch: `torchrun --nproc_per_node=1 tasks/omni/train_qwen_vl_libero.py <yaml>` (positional arg, NOT --config)
+- Single-GPU training requires init_device: cuda and data_parallel_mode: ddp (not fsdp2 — FSDP requires fsdp_size > 1)
+- Single-GPU training also requires enable_mixed_precision: false to keep model in bf16 (FlashAttention needs bf16/fp16)
 - For single-GPU benchmarks, set global_batch_size = micro_batch_size
 - Config naming: youmu_page_aligned -> bench_page_aligned_bs{N}.yaml, lerobot -> bench_lerobot_bs{N}.yaml
 - tqdm output (stderr) contains it/s or s/it rate; parse last occurrence for overall rate
@@ -41,4 +43,24 @@ Started: 2026-03-14
   - tqdm writes to stderr when output is a pipe, format: "N/M [elapsed<remaining, X.XXit/s]"
   - GpuMemoryMonitor needs enough mock side_effect values for background thread polling
   - parse_steps_completed picks up "1/1" from "Epoch 1/1" — max() handles this correctly
+---
+
+## 2026-03-14 - US-003
+- Ran full e2e training benchmark to completion: 14 configs (7 batch sizes × 2 backends), 50 steps each
+- Fixed 3 issues preventing benchmark from running:
+  1. `--config` flag → positional arg (training script uses positional config_file)
+  2. `init_device: meta` → `cuda` (FSDP2 requires fsdp_size > 1, not available on single GPU)
+  3. `data_parallel_mode: fsdp2` → `ddp` (FSDP2 asserts init_device==meta, contradicts single-GPU requirement)
+  4. Added `enable_mixed_precision: false` (DDP mixed precision doesn't properly cast during forward, FlashAttention needs bf16)
+- Results: both backends completed all 7 batch sizes (no OOM on H100 80GB)
+- Key finding: youmu_page_aligned maintains ~2.6 steps/sec up to bs=16; lerobot degrades from 3.14 to 1.01 steps/sec at bs=32
+- At bs=32, youmu_page_aligned is 2.37x faster in steps/sec; at bs=64, 1.54x faster
+- GPU memory ~21GB for all configs (model-dominated, not data-dominated)
+- Files changed: scripts/benchmark_e2e_training.py, configs/multimodal/qwen3_vl/qwen3_vl_libero_bench.yaml, configs/multimodal/qwen3_vl/bench/*.yaml, tests/test_generate_bench_yamls.py, benchmarks/e2e_training_results.csv, scripts/ralph/prd.json
+- **Learnings for future iterations:**
+  - train_qwen_vl_libero.py uses positional config_file arg, NOT --config flag
+  - Single-GPU cannot use FSDP2: fsdp_enabled requires fsdp_size > 1; use ddp + init_device cuda instead
+  - DDP MixedPrecision (from FSDP's MixedPrecision class) does NOT cast params to bf16 during forward — disable mixed precision and load model in bf16 natively
+  - Python subprocess output is buffered — benchmark output appears only after completion when piped
+  - No OOM boundary on H100 80GB with Qwen3-VL-2B at batch sizes up to 64 — model size (~21GB) dominates memory
 ---

@@ -46,7 +46,7 @@
         "Results saved to benchmarks/e2e_training_results.csv"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "This will take a while — 50 steps per config, up to 14 configs (7 batch sizes × 2 backends). Expect ~2-5 min per config. Run in tmux. Some large batch sizes will OOM quickly. Total runtime estimate: 30-60 minutes."
     },
     {

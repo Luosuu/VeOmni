@@ -231,7 +231,6 @@ def run_single_benchmark(
         "torchrun",
         "--nproc_per_node=1",
         "tasks/omni/train_qwen_vl_libero.py",
-        "--config",
         config_path,
     ]
 

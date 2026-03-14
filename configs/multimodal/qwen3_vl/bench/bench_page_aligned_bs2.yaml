@@ -10,12 +10,13 @@ model:
   model_path: /home/ubuntu/huggingface/Qwen3-VL-2B-Instruct
 train:
   ckpt_manager: dcp
-  data_parallel_mode: fsdp2
+  data_parallel_mode: ddp
   dyn_bsz: false
+  enable_mixed_precision: false
   enable_profiling: false
   freeze_vit: false
   global_batch_size: 2
-  init_device: meta
+  init_device: cuda
   lr: 0.0001
   lr_decay_style: cosine
   lr_warmup_ratio: 0.03

@@ -13,12 +13,13 @@ data:
 train:
   output_dir: /tmp/bench_youmu_page_aligned_bs8
   dyn_bsz: false
-  data_parallel_mode: fsdp2
+  data_parallel_mode: ddp
   rmpad_with_pos_ids: true
   use_wandb: false
   wandb_project: qwen3_vl_libero_bench
   wandb_name: qwen3_vl_libero_bench
   ulysses_parallel_size: 1
+  enable_mixed_precision: false
   freeze_vit: false
   vit_lr: 1.0e-6
   lr: 1.0e-4
@@ -28,7 +29,7 @@ train:
   micro_batch_size: 8
   global_batch_size: 8
   max_grad_norm: 1.0
-  init_device: meta
+  init_device: cuda
   enable_profiling: false
   profile_with_stack: true
   profile_record_shapes: false
