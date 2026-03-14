@@ -1,0 +1,42 @@
+model:
+  model_path: /home/ubuntu/huggingface/Qwen3-VL-2B-Instruct
+  attn_implementation: flash_attention_2
+
+data:
+  train_path: unused
+  libero_data_dir: /home/ubuntu/dataset/hf_vla_64k
+  libero_dataset_backend: youmu_page_aligned
+  obs_len: 4
+  pred_len: 2
+  max_seq_len: 2048
+
+train:
+  output_dir: /tmp/bench_youmu_page_aligned_bs8
+  dyn_bsz: false
+  data_parallel_mode: fsdp2
+  rmpad_with_pos_ids: true
+  use_wandb: false
+  wandb_project: qwen3_vl_libero_bench
+  wandb_name: qwen3_vl_libero_bench
+  ulysses_parallel_size: 1
+  freeze_vit: false
+  vit_lr: 1.0e-6
+  lr: 1.0e-4
+  lr_decay_style: cosine
+  lr_warmup_ratio: 0.03
+  num_train_epochs: 1
+  micro_batch_size: 8
+  global_batch_size: 8
+  max_grad_norm: 1.0
+  init_device: meta
+  enable_profiling: false
+  profile_with_stack: true
+  profile_record_shapes: false
+  profile_profile_memory: false
+  profile_start_step: 20
+  profile_end_step: 21
+  profile_trace_dir: /tmp/bench_profile
+  ckpt_manager: dcp
+  save_hf_weights: true
+  save_epochs: 5
+  max_steps: 50

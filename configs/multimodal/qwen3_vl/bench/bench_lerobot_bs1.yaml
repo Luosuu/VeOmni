@@ -1,0 +1,40 @@
+data:
+  libero_data_dir: /home/ubuntu/dataset/hf_vla
+  libero_dataset_backend: lerobot
+  max_seq_len: 2048
+  obs_len: 4
+  pred_len: 2
+  train_path: unused
+model:
+  attn_implementation: flash_attention_2
+  model_path: /home/ubuntu/huggingface/Qwen3-VL-2B-Instruct
+train:
+  ckpt_manager: dcp
+  data_parallel_mode: fsdp2
+  dyn_bsz: false
+  enable_profiling: false
+  freeze_vit: false
+  global_batch_size: 1
+  init_device: meta
+  lr: 0.0001
+  lr_decay_style: cosine
+  lr_warmup_ratio: 0.03
+  max_grad_norm: 1.0
+  max_steps: 50
+  micro_batch_size: 1
+  num_train_epochs: 1
+  output_dir: /tmp/bench_lerobot_bs1
+  profile_end_step: 21
+  profile_profile_memory: false
+  profile_record_shapes: false
+  profile_start_step: 20
+  profile_trace_dir: /tmp/bench_profile
+  profile_with_stack: true
+  rmpad_with_pos_ids: true
+  save_epochs: 5
+  save_hf_weights: true
+  ulysses_parallel_size: 1
+  use_wandb: false
+  vit_lr: 1.0e-06
+  wandb_name: qwen3_vl_libero_bench
+  wandb_project: qwen3_vl_libero_bench
