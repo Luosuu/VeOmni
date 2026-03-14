@@ -127,3 +127,21 @@ Started: 2026-03-14
   - `benchmark_memory_sweep.sh` runs each backend separately per RAM limit, so one backend's OOM doesn't prevent others from running
   - The cgroup memory limit (via `systemd-run --scope -p MemoryMax`) applies to all processes in the scope including DataLoader workers
 ---
+
+## 2026-03-14 - US-007
+- Wrote comprehensive benchmark report at `benchmarks/page_aligned_benchmark_report.md`
+- Report combines unconstrained (US-005) and memory-constrained (US-006) results
+- Includes: summary tables, ASCII throughput chart, crossover analysis, I/O amplification comparison, memory efficiency, and backend recommendations
+- Key findings documented:
+  - Page-aligned: 589 samples/s unconstrained, 226 samples/s at 16G constrained
+  - Crossover vs lerobot at 8G RAM (183 vs 142 samples/s, 1.29x)
+  - I/O amplification: row-range 239x, page-aligned 18x, lerobot 0.7x
+  - Recommendation: use page-aligned for production (>=8GB RAM), lerobot for low-memory
+- Files changed:
+  - `benchmarks/page_aligned_benchmark_report.md` (new, comprehensive report)
+  - `scripts/ralph/prd.json` (US-007 passes: true)
+- **Learnings for future iterations:**
+  - Row-range I/O amplification is roughly constant across RAM limits (184-239x) — the problem is random access pattern, not cache miss rate
+  - LeRobot throughput is remarkably stable across RAM limits (138-148 samples/s) — Arrow memory-mapping handles cache pressure gracefully
+  - Page-aligned throughput actually peaks at 16G (226 samples/s), not 32G (205 samples/s) — likely due to OS page cache thrashing at higher worker counts with more available RAM
+---

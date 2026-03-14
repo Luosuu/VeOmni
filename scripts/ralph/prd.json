@@ -113,7 +113,7 @@
         "Conclusion with recommendation on when to use each backend"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Combine data from US-005 (unconstrained) and US-006 (constrained). Expected findings: unconstrained — page-aligned similar to or slightly better than row-range youmu, LeRobot fastest. Constrained — page-aligned stable, row-range youmu degrades severely, LeRobot degrades moderately. Crossover likely at 4-8G."
     }
   ]
