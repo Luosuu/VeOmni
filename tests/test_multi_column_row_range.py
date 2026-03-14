@@ -221,11 +221,12 @@ class TestMultiColumnListFloat:
     read_list_row_range_py instead.
     """
 
-    def test_list_column_returns_flat_values(self):
-        """Multi-column read of a list<float> column returns flat floats, not lists.
+    def test_list_column_returns_list_array(self):
+        """Multi-column read of a list<float> column returns a proper ListArray.
 
-        This documents a known API behavior: the multi-column reader operates on
-        physical leaf columns and does not reconstruct list structure.
+        After the Rust fix (US-002), multi-column reads detect LIST columns
+        (via rep_level > 0) and dispatch to the list-aware reader, returning
+        proper ListArrays with correct list structure.
         """
         state_idx, _, _ = _get_column_indices()
         cache = ParquetReaderCachePy()
@@ -238,43 +239,34 @@ class TestMultiColumnListFloat:
 
         arr, row_count = results[0]
         assert row_count == num_rows
-        # The reader returns flat float values, not list-wrapped values.
-        # For a list<float> column with 8 elements per list and 3 rows,
-        # this returns only 3 float values (the first 3 leaf floats), not 24.
-        assert isinstance(arr, pa.FloatArray)
-        assert len(arr) == num_rows  # NOT num_rows * list_dim
+        # The reader now returns proper ListArrays for LIST columns
+        assert isinstance(arr, pa.ListArray)
+        assert len(arr) == num_rows
 
-    def test_flat_values_match_first_elements_of_lists(self):
-        """The flat floats from multi-column read match the start of the flattened list data."""
+    def test_list_values_match_single_column_read(self):
+        """Multi-column read of LIST column matches read_list_row_range_py exactly."""
         state_idx, _, _ = _get_column_indices()
         cache = ParquetReaderCachePy()
         cache.preload([DATA_FILE])
 
         num_rows = 5
 
-        # Multi-column returns flat floats
+        # Multi-column read (now returns ListArray)
         multi_results = read_multi_column_row_range_py(
             DATA_FILE, 0, [state_idx], 0, num_rows, cache=cache
         )
         multi_arr, _ = multi_results[0]
-        multi_values = multi_arr.to_pylist()
 
-        # List reader returns proper ListArray
+        # Single-column list read (known correct)
         list_arr, _ = read_list_row_range_py(
             DATA_FILE, 0, state_idx, 0, num_rows, cache=cache
         )
 
-        # Flatten all list elements in order
-        all_list_floats = []
-        for i in range(len(list_arr)):
-            all_list_floats.extend(list_arr[i].as_py())
-
-        # The multi-column flat values should match the first N elements
-        # of the flattened list data (they're just reading the leaf float column)
+        # Both should return identical ListArrays
+        assert len(multi_arr) == len(list_arr)
         for i in range(num_rows):
-            assert abs(multi_values[i] - all_list_floats[i]) < 1e-6, (
-                f"Mismatch at index {i}: multi={multi_values[i]}, "
-                f"list_flat={all_list_floats[i]}"
+            assert multi_arr[i].as_py() == list_arr[i].as_py(), (
+                f"Mismatch at row {i}"
             )
 
     def test_list_column_read_via_proper_api(self):
@@ -318,8 +310,8 @@ class TestMultiColumnMixed:
     def test_read_two_list_and_one_binary(self):
         """Reading [state, action, image_bytes] in one call returns 3 results.
 
-        NOTE: state and action return flat float values (not lists) because
-        multi-column read operates on physical leaf columns.
+        All column types are correctly handled: LIST columns return ListArrays,
+        BYTE_ARRAY columns return BinaryArrays.
         """
         state_idx, action_idx, image_idx = _get_column_indices()
         cache = ParquetReaderCachePy()
@@ -333,17 +325,19 @@ class TestMultiColumnMixed:
 
         assert len(results) == 3
 
-        # State (flat floats from list<float> leaf)
+        # State (LIST<FLOAT32> — returns proper ListArray)
         state_arr, state_rows = results[0]
         assert state_rows == num_rows
-        assert isinstance(state_arr, pa.FloatArray)
+        assert isinstance(state_arr, pa.ListArray)
+        assert len(state_arr) == num_rows
 
-        # Action (flat floats from list<float> leaf)
+        # Action (LIST<FLOAT32> — returns proper ListArray)
         action_arr, action_rows = results[1]
         assert action_rows == num_rows
-        assert isinstance(action_arr, pa.FloatArray)
+        assert isinstance(action_arr, pa.ListArray)
+        assert len(action_arr) == num_rows
 
-        # Image bytes (binary — works correctly)
+        # Image bytes (BYTE_ARRAY — returns BinaryArray)
         image_arr, image_rows = results[2]
         assert image_rows == num_rows
         assert isinstance(image_arr, pa.BinaryArray)
@@ -363,8 +357,8 @@ class TestMultiColumnMixed:
         assert len(results) == 2
         # First result should be image (binary)
         assert isinstance(results[0][0], pa.BinaryArray)
-        # Second result should be state (float)
-        assert isinstance(results[1][0], pa.FloatArray)
+        # Second result should be state (ListArray)
+        assert isinstance(results[1][0], pa.ListArray)
 
 
 # ---------------------------------------------------------------------------

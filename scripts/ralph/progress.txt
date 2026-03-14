@@ -3,7 +3,7 @@ Started: Sat Mar 14 05:06:40 UTC 2026
 ---
 
 ## Codebase Patterns
-- `read_multi_column_row_range_py` operates on physical leaf columns, NOT logical columns. For LIST columns it returns flat values, not ListArrays. Use `read_list_row_range_py` for list columns.
+- `read_multi_column_row_range_py` now correctly handles both flat AND LIST columns. It detects LIST columns (via `max_rep_level() > 0`) and dispatches to the list-aware reader automatically.
 - Physical column indices: observation.images.image.bytes=0, observation.state=4, action=5 (for hf_vla_64k dataset)
 - `_find_physical_column_index` in `youmu/libero_dataset.py` maps logical column names to physical indices, handling struct and list types
 - Parquet files in hf_vla_64k have 1 row group per file, so cross-RG reads within a single file are not needed
@@ -25,4 +25,25 @@ Started: Sat Mar 14 05:06:40 UTC 2026
   - The multi-column API is a thin wrapper that loops over `read_rows_from_column` per column — it shares offset index parsing but doesn't batch I/O
   - hf_vla_64k files have 1 row group each, so cross-RG boundary testing requires synthetic fixtures
   - `_count_physical_columns` handles nested types (struct children count as separate physical columns)
+---
+
+## 2026-03-14 - US-002
+- Implemented multi-column row-range reads in LiberoYoumuDataset
+- **Rust fix:** Extended `read_multi_column_row_range` to detect LIST columns (via `column_desc.max_rep_level() > 0`) and dispatch to the list-aware reader (`read_list_row_range_with_reader`/`read_list_row_range_with_reader_and_offsets`). This was Option B from US-001.
+- **Python changes:** Added `_read_obs_window()` method that reads state (LIST) + image (BYTE_ARRAY) together in one `read_multi_column_row_range_py` call. `__getitem__` now makes 2 calls instead of 3: one for obs window (state+image), one for pred window (action).
+- **Tests:**
+  - 4 new Rust-level tests verifying LIST column support in multi-column reads
+  - 3 new dataset-level tests verifying multi-column `__getitem__` produces identical outputs to per-column reads for 90+ indices
+  - Updated 4 US-001 tests that documented the old broken behavior to assert correct ListArray returns
+- Files changed:
+  - `submodules/youmu/submodules/arrow-rs/parquet/src/file/direct_page.rs` (Rust: LIST column dispatch in multi-column readers)
+  - `submodules/youmu/python/youmu/libero_dataset.py` (Python: `_read_obs_window`, updated `__getitem__`)
+  - `submodules/youmu/test/test_python.py` (7 new tests)
+  - `tests/test_multi_column_row_range.py` (4 updated tests)
+  - `scripts/ralph/prd.json` (US-002 passes: true)
+- **Learnings for future iterations:**
+  - Parquet LIST columns have `max_rep_level() > 0` in their ColumnDescriptor — this is the reliable way to detect them in Rust
+  - The test fixture `libero_fixture.parquet` uses column names `observation.state`/`action`/`observation.images.image`, NOT the LiberoYoumuDataset defaults `state`/`actions`/`image` — always pass explicit column names when using fixtures
+  - Rust must be installed (`rustup`) and maturin must be available to rebuild Youmu: `PATH="$HOME/.cargo/bin:$PATH" && maturin develop --release`
+  - Generate test fixtures before running tests: `python test/fixtures/generate_test_parquet.py && python test/fixtures/generate_libero_fixture.py`
 ---

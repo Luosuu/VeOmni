@@ -31,7 +31,7 @@
         "Tests pass"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Current __getitem__ makes 3 separate calls: _read_list_column_range for state, _read_list_column_range for action, _read_image_range for image. The obs window is [anchor - obs_len + 1, anchor] inclusive and pred window is [anchor + 1, anchor + pred_len] inclusive. State and image share the obs window range, so they can be read together in one multi-column call. Action uses the pred window range in a separate call. This reduces from 3 calls to 2. Import read_multi_column_row_range_py from youmu."
     },
     {
