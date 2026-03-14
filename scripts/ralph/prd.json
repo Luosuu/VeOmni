@@ -60,8 +60,8 @@
         "Results demonstrate measurable I/O efficiency improvement for multi-column reads"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": "Use scripts/benchmark_data_loading.py with --backends youmu lerobot. Include a comparison table and brief analysis."
+      "passes": true,
+      "notes": "Ran benchmark with 48 configs (workers=[0,2,4,8], obs_lens=[1,2,4], batch_sizes=[4,8]) for both youmu and lerobot. Report at benchmarks/multi_column_benchmark_report.md. Key findings: LeRobot 1.2-1.9x faster in throughput but Youmu uses 2-3x less memory. Gap narrows from 1.89x at obs=1 to 1.16x at obs=4."
     }
   ]
 }
