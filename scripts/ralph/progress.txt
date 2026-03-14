@@ -60,3 +60,21 @@ Started: 2026-03-14
   - `MyDataArguments` requires `train_path` from parent `DataArguments` — must pass it when testing defaults
   - Episode-per-file JSONL metadata is simpler to set up in test fixtures than the parquet metadata format (which requires `data/file_index`, `dataset_from_index`, `dataset_to_index` columns)
 ---
+
+## 2026-03-14 - US-004
+- Implemented correctness validation integration tests in `tests/data/test_page_aligned_correctness.py`
+- 8 tests across 4 test classes:
+  - `TestAnchorSetComparison`: full-epoch anchor set identity (2 tests)
+  - `TestTensorComparison`: state/action/image tensor matching for random anchors (2 tests)
+  - `TestShuffleBufferRandomness`: output order is shuffled, episodes are mixed (2 tests)
+  - `TestEdgeAnchorCorrectness`: first/last anchors per page match row-range (2 tests)
+- Uses module-scoped fixtures to share expensive full-epoch iteration across tests
+- Files changed:
+  - `tests/data/test_page_aligned_correctness.py` (new, ~300 lines)
+  - `scripts/ralph/prd.json` (US-004 passes: true)
+- **Learnings for future iterations:**
+  - Full-epoch iteration of 265K samples (no images) takes ~2 minutes — use module-scoped fixtures to share this across tests
+  - `shuffle_buffer_size=300000` (larger than anchor count) ensures all samples are collected before draining, useful for testing but not production
+  - Image tensor comparison with `torch.equal` (exact match) works because both backends decode the same PNG bytes
+  - Edge anchors at page boundaries correctly use the LRU page cache for cross-page reads — no issues found
+---
