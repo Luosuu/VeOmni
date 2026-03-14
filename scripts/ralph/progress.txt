@@ -10,6 +10,9 @@ Started: 2026-03-14
 - Use `LiberoYoumuDataset._load_chunk()` as a static method to reuse chunk-loading logic across dataset classes.
 - Multi-worker page partitioning must use deterministic assignment (sorted unique pages) since `get_shuffled_multi_column_indices_dataset_level` returns different random orders per call.
 - When wrapping an `IterableDataset` with a transform, use `TransformIterableDataset` (not `MappingDataset`). `build_dataloader` auto-handles IterableDataset (skips sampler).
+- In benchmark scripts, `isinstance(dataset, IterableDataset)` to conditionally set `shuffle=False` for DataLoader — IterableDataset raises ValueError if shuffle=True.
+- `benchmark_data_loading.py` supports incremental CSV writing via `output_path` parameter to `run_sweep()` — partial results are preserved if OOM-killed mid-sweep.
+- `analyze_memory_benchmark.py`'s `find_crossover_point()` accepts a `backend` parameter to compare any youmu variant vs lerobot.
 
 ---
 
@@ -77,4 +80,50 @@ Started: 2026-03-14
   - `shuffle_buffer_size=300000` (larger than anchor count) ensures all samples are collected before draining, useful for testing but not production
   - Image tensor comparison with `torch.equal` (exact match) works because both backends decode the same PNG bytes
   - Edge anchors at page boundaries correctly use the LRU page cache for cross-page reads — no issues found
+---
+
+## 2026-03-14 - US-005
+- Added `youmu_page_aligned` backend to both benchmark scripts (`scripts/benchmark_data_loading.py` and `scripts/benchmark_data_loading_sweep.py`)
+- Added `create_youmu_page_aligned_dataset()` factory function alongside existing `create_youmu_dataset()`
+- Updated `benchmark_one_config` to detect `IterableDataset` and set `shuffle=False` for DataLoader
+- Updated `--backends` CLI arg choices and defaults to include `youmu_page_aligned`
+- Ran full benchmark: 72 configs (3 backends x 4 num_workers x 3 obs_lens x 2 batch_sizes x 200 iterations)
+- Results saved to `benchmarks/page_aligned_unconstrained_results.csv`
+- Files changed:
+  - `scripts/benchmark_data_loading.py` (added factory, IterableDataset handling, backend choice)
+  - `scripts/benchmark_data_loading_sweep.py` (same changes)
+  - `tests/test_benchmark_page_aligned.py` (new, 16 tests)
+  - `benchmarks/page_aligned_unconstrained_results.csv` (new, 72 result rows)
+  - `scripts/ralph/prd.json` (US-005 passes: true)
+- **Learnings for future iterations:**
+  - `DataLoader(shuffle=True)` raises `ValueError` for `IterableDataset` — must check `isinstance(dataset, IterableDataset)` before creating DataLoader
+  - Page-aligned is dramatically faster: 589 samples/s (best) vs 200 for lerobot and 84 for youmu row-range
+  - Page-aligned uses more RSS memory (1.5-3.7GB) vs youmu row-range (0.8GB) due to shuffle buffer and page cache
+  - I/O amplification shows 0.00x for multi-worker configs because `/proc/self/io` only tracks the main process, not worker subprocesses
+---
+
+## 2026-03-14 - US-006
+- Ran memory-constrained benchmark sweep with all 3 backends across [2G, 4G, 8G, 16G, 32G] RAM limits
+- Updated `benchmark_memory_sweep.sh` to support 3 backends (default: youmu, youmu_page_aligned, lerobot) with `--backends`, `--ram-limits`, `--output-dir` CLI flags
+- Updated `analyze_memory_benchmark.py` to handle 3 backends: ratio columns for each youmu variant vs lerobot, crossover detection per variant
+- Added incremental CSV writing to `benchmark_data_loading.py` so partial results survive OOM kills
+- Results saved to `benchmarks/memory_constrained_page_aligned/`
+- Key findings:
+  - **Page-aligned crossover at 8G**: 183 samples/s vs lerobot's 142 samples/s (1.29x)
+  - **Peak at 16G**: page-aligned reaches 226 samples/s (1.53x lerobot)
+  - **youmu row-range degrades severely**: 5-9 samples/s at 2G-8G, only 90 at 32G
+  - **Page-aligned at low RAM** (single worker): 80-134 samples/s even at 2G-4G, but multi-worker OOMs due to per-worker shuffle buffer memory
+- Files changed:
+  - `scripts/benchmark_memory_sweep.sh` (added --backends, --ram-limits, --output-dir flags; default 3 backends; default RAM [2G-32G])
+  - `scripts/benchmark_data_loading.py` (incremental CSV writing via output_path, CSV_FIELDNAMES constant)
+  - `scripts/analyze_memory_benchmark.py` (find_crossover_point backend param, 3-backend report with multiple ratio columns)
+  - `tests/test_analyze_memory_benchmark.py` (added 3 tests: page_aligned_backend, default_backend, three_backends report)
+  - `tests/test_benchmark_memory_sweep.sh` (updated RAM limit check, added youmu_page_aligned check)
+  - `benchmarks/memory_constrained_page_aligned/` (5 CSV files + combined + report)
+  - `scripts/ralph/prd.json` (US-006 passes: true)
+- **Learnings for future iterations:**
+  - `youmu_page_aligned` uses 1.5-3.2GB RSS per worker due to shuffle buffer + page cache — at 2G-4G RAM limits, multi-worker configs OOM but single-worker works fine
+  - Incremental CSV writing (flush after each config) is essential for memory-constrained benchmarks — without it, OOM kills lose all data
+  - `benchmark_memory_sweep.sh` runs each backend separately per RAM limit, so one backend's OOM doesn't prevent others from running
+  - The cgroup memory limit (via `systemd-run --scope -p MemoryMax`) applies to all processes in the scope including DataLoader workers
 ---

@@ -17,9 +17,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONSTRAINED_SCRIPT="${SCRIPT_DIR}/benchmark_memory_constrained.sh"
 OUTPUT_DIR="benchmarks/memory_constrained"
 
-# Sweep parameters
-RAM_LIMITS=(1G 2G 4G 8G 16G 32G)
-BACKENDS=(youmu lerobot)
+# Sweep parameters (defaults)
+RAM_LIMITS=(2G 4G 8G 16G 32G)
+BACKENDS=(youmu youmu_page_aligned lerobot)
 NUM_WORKERS="0 2 4 8"
 OBS_LENS="1 2 4"
 BATCH_SIZES="4 8"
@@ -28,18 +28,22 @@ WARMUP_ITERATIONS=5
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--help]
+Usage: $(basename "$0") [OPTIONS]
 
 Run the data loading benchmark across all RAM limits and configurations.
 
-RAM limits: ${RAM_LIMITS[*]}
-Backends:   ${BACKENDS[*]}
+Options:
+  --backends <b1> [b2] ...   Backends to benchmark (default: ${BACKENDS[*]})
+  --ram-limits <l1> [l2] ... RAM limits to sweep (default: ${RAM_LIMITS[*]})
+  --output-dir <dir>         Output directory (default: ${OUTPUT_DIR})
+  --help                     Show this help message
+
 Workers:    ${NUM_WORKERS}
 Obs lens:   ${OBS_LENS}
 Batch sizes: ${BATCH_SIZES}
 Iterations: ${NUM_ITERATIONS} (warmup=${WARMUP_ITERATIONS})
 
-Results are saved to ${OUTPUT_DIR}/mem_<limit>.csv.
+Results are saved to <output-dir>/mem_<limit>.csv.
 EOF
 }
 
@@ -49,6 +53,38 @@ while [[ $# -gt 0 ]]; do
         --help)
             usage
             exit 0
+            ;;
+        --backends)
+            shift
+            BACKENDS=()
+            while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
+                BACKENDS+=("$1")
+                shift
+            done
+            if [[ ${#BACKENDS[@]} -eq 0 ]]; then
+                echo "Error: --backends requires at least one value" >&2
+                exit 1
+            fi
+            ;;
+        --ram-limits)
+            shift
+            RAM_LIMITS=()
+            while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
+                RAM_LIMITS+=("$1")
+                shift
+            done
+            if [[ ${#RAM_LIMITS[@]} -eq 0 ]]; then
+                echo "Error: --ram-limits requires at least one value" >&2
+                exit 1
+            fi
+            ;;
+        --output-dir)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --output-dir requires a value" >&2
+                exit 1
+            fi
+            OUTPUT_DIR="$2"
+            shift 2
             ;;
         *)
             echo "Error: unknown argument '$1'" >&2

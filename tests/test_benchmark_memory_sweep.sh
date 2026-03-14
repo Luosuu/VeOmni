@@ -57,7 +57,7 @@ run_test_output_contains \
 run_test_output_contains \
     "--help mentions RAM limits" \
     0 \
-    "1G" \
+    "2G" \
     bash "${SCRIPT_UNDER_TEST}" --help
 
 # --- Test: --help mentions backends ---
@@ -65,6 +65,13 @@ run_test_output_contains \
     "--help mentions backends" \
     0 \
     "youmu" \
+    bash "${SCRIPT_UNDER_TEST}" --help
+
+# --- Test: --help mentions youmu_page_aligned ---
+run_test_output_contains \
+    "--help mentions youmu_page_aligned" \
+    0 \
+    "youmu_page_aligned" \
     bash "${SCRIPT_UNDER_TEST}" --help
 
 # --- Test: --help mentions iterations ---

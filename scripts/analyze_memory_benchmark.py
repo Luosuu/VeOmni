@@ -179,20 +179,23 @@ def get_oom_failures(rows: list[dict]) -> dict:
     return failures
 
 
-def find_crossover_point(best: dict, mem_limits: list[str]) -> str | None:
-    """Find the lowest memory limit where youmu throughput >= lerobot.
+def find_crossover_point(
+    best: dict, mem_limits: list[str], backend: str = "youmu"
+) -> str | None:
+    """Find the lowest memory limit where backend throughput >= lerobot.
 
     Args:
         best: Dict from get_best_throughput_per_backend.
         mem_limits: Ordered list of memory limits present in the data.
+        backend: Backend to compare against lerobot (default "youmu").
 
     Returns:
         Memory limit string where crossover occurs, or None.
     """
     for mem in mem_limits:
-        youmu = best.get((mem, "youmu"))
+        target = best.get((mem, backend))
         lerobot = best.get((mem, "lerobot"))
-        if youmu and lerobot and youmu["samples_per_sec"] >= lerobot["samples_per_sec"]:
+        if target and lerobot and target["samples_per_sec"] >= lerobot["samples_per_sec"]:
             return mem
     return None
 
@@ -223,33 +226,35 @@ def generate_report(rows: list[dict]) -> str:
     lines.append("Best throughput (samples/sec) per backend at each RAM limit:")
     lines.append("")
 
+    # Identify youmu-family backends for ratio columns
+    youmu_backends = [b for b in backends if b.startswith("youmu")]
+
     # Summary table header
     header = "| RAM Limit |"
     separator = "|-----------|"
     for b in backends:
         header += f" {b} (samples/s) | {b} config |"
         separator += "---:|---|"
-    header += " Ratio (youmu/lerobot) |"
-    separator += "---:|"
+    for yb in youmu_backends:
+        header += f" Ratio ({yb}/lerobot) |"
+        separator += "---:|"
     lines.append(header)
     lines.append(separator)
 
     # Summary table rows
-    crossover_point = find_crossover_point(best, mem_limits)
+    crossover_points = {
+        yb: find_crossover_point(best, mem_limits, backend=yb) for yb in youmu_backends
+    }
     for mem in mem_limits:
         row_str = f"| {mem} |"
-        youmu_sps = None
-        lerobot_sps = None
+        backend_sps = {}
         for b in backends:
             entry = best.get((mem, b))
             fail_count = failures.get((mem, b), 0)
             if entry:
                 sps = entry["samples_per_sec"]
+                backend_sps[b] = sps
                 config = f"w={entry['num_workers']} obs={entry['obs_len']} bs={entry['batch_size']}"
-                if b == "youmu":
-                    youmu_sps = sps
-                elif b == "lerobot":
-                    lerobot_sps = sps
                 suffix = f" ({fail_count} errors)" if fail_count else ""
                 row_str += f" {sps:.2f}{suffix} | {config} |"
             elif fail_count:
@@ -257,13 +262,16 @@ def generate_report(rows: list[dict]) -> str:
             else:
                 row_str += " N/A | - |"
 
-        # Ratio column
-        if youmu_sps and lerobot_sps and lerobot_sps > 0:
-            ratio = youmu_sps / lerobot_sps
-            marker = " **crossover**" if mem == crossover_point else ""
-            row_str += f" {ratio:.2f}x{marker} |"
-        else:
-            row_str += " N/A |"
+        # Ratio columns for each youmu variant vs lerobot
+        lerobot_sps = backend_sps.get("lerobot")
+        for yb in youmu_backends:
+            yb_sps = backend_sps.get(yb)
+            if yb_sps and lerobot_sps and lerobot_sps > 0:
+                ratio = yb_sps / lerobot_sps
+                marker = " **crossover**" if mem == crossover_points.get(yb) else ""
+                row_str += f" {ratio:.2f}x{marker} |"
+            else:
+                row_str += " N/A |"
 
         lines.append(row_str)
 
@@ -272,16 +280,18 @@ def generate_report(rows: list[dict]) -> str:
     # Crossover analysis
     lines.append("## Analysis")
     lines.append("")
-    if crossover_point:
-        lines.append(
-            f"**Crossover point:** Youmu throughput meets or exceeds LeRobot "
-            f"at **{crossover_point}** RAM limit."
-        )
-    else:
-        lines.append(
-            "**Crossover point:** No crossover detected in the tested RAM range. "
-            "Youmu did not meet or exceed LeRobot throughput at any tested limit."
-        )
+    for yb in youmu_backends:
+        cp = crossover_points.get(yb)
+        if cp:
+            lines.append(
+                f"**Crossover point ({yb} vs lerobot):** {yb} throughput meets or "
+                f"exceeds LeRobot at **{cp}** RAM limit."
+            )
+        else:
+            lines.append(
+                f"**Crossover point ({yb} vs lerobot):** No crossover detected. "
+                f"{yb} did not meet or exceed LeRobot throughput at any tested limit."
+            )
     lines.append("")
 
     # OOM failure notes

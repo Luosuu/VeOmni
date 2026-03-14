@@ -314,6 +314,25 @@ class TestFindCrossoverPoint:
         }
         assert find_crossover_point(best, ["2G", "4G"]) == "4G"
 
+    def test_page_aligned_backend(self):
+        """Finds crossover for youmu_page_aligned vs lerobot."""
+        best = {
+            ("2G", "youmu_page_aligned"): {"samples_per_sec": 50},
+            ("2G", "lerobot"): {"samples_per_sec": 60},
+            ("4G", "youmu_page_aligned"): {"samples_per_sec": 100},
+            ("4G", "lerobot"): {"samples_per_sec": 90},
+        }
+        assert find_crossover_point(best, ["2G", "4G"], backend="youmu_page_aligned") == "4G"
+
+    def test_default_backend_is_youmu(self):
+        """Default backend parameter is 'youmu'."""
+        best = {
+            ("4G", "youmu"): {"samples_per_sec": 100},
+            ("4G", "lerobot"): {"samples_per_sec": 90},
+        }
+        # Should work without specifying backend (defaults to youmu)
+        assert find_crossover_point(best, ["4G"]) == "4G"
+
 
 # --- Unit tests: generate_report ---
 
@@ -359,6 +378,50 @@ class TestGenerateReport:
         # Check some data values appear
         assert "150.00" in report  # 8G youmu
         assert "200.00" in report  # 8G lerobot
+
+    def test_report_with_three_backends(self, tmp_path):
+        """Report handles 3 backends (youmu, youmu_page_aligned, lerobot)."""
+        _make_csv(str(tmp_path), "mem_4G.csv", [
+            {
+                "backend": "youmu", "obs_len": "1", "pred_len": "4",
+                "num_workers": "2", "batch_size": "8",
+                "samples_per_sec": "80.0", "time_to_first_sample_sec": "0.001",
+                "peak_rss_mb": "500.0", "total_samples": "200",
+                "total_time_sec": "2.5", "batches_completed": "50",
+                "io_bytes_read": "100000", "payload_bytes": "80000",
+                "io_amplification_ratio": "1.25", "error": "",
+            },
+            {
+                "backend": "youmu_page_aligned", "obs_len": "1", "pred_len": "4",
+                "num_workers": "2", "batch_size": "8",
+                "samples_per_sec": "120.0", "time_to_first_sample_sec": "0.002",
+                "peak_rss_mb": "600.0", "total_samples": "200",
+                "total_time_sec": "1.67", "batches_completed": "50",
+                "io_bytes_read": "90000", "payload_bytes": "80000",
+                "io_amplification_ratio": "1.13", "error": "",
+            },
+            {
+                "backend": "lerobot", "obs_len": "1", "pred_len": "4",
+                "num_workers": "2", "batch_size": "8",
+                "samples_per_sec": "100.0", "time_to_first_sample_sec": "0.003",
+                "peak_rss_mb": "1000.0", "total_samples": "200",
+                "total_time_sec": "2.0", "batches_completed": "50",
+                "io_bytes_read": "200000", "payload_bytes": "80000",
+                "io_amplification_ratio": "2.50", "error": "",
+            },
+        ])
+        combined = aggregate_csvs(str(tmp_path))
+        report = generate_report(combined)
+        # Report should contain all three backends
+        assert "youmu_page_aligned" in report
+        assert "youmu" in report
+        assert "lerobot" in report
+        # Should have two ratio columns
+        assert "Ratio (youmu/lerobot)" in report
+        assert "Ratio (youmu_page_aligned/lerobot)" in report
+        # Should have crossover analysis for both youmu variants
+        assert "youmu vs lerobot" in report
+        assert "youmu_page_aligned vs lerobot" in report
 
     def test_report_no_oom_section_when_clean(self, tmp_path):
         """Report omits OOM section when there are no errors."""

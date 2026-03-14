@@ -264,6 +264,25 @@ def benchmark_one_config(
     }
 
 
+CSV_FIELDNAMES = [
+    "backend",
+    "obs_len",
+    "pred_len",
+    "num_workers",
+    "batch_size",
+    "samples_per_sec",
+    "time_to_first_sample_sec",
+    "peak_rss_mb",
+    "total_samples",
+    "total_time_sec",
+    "batches_completed",
+    "io_bytes_read",
+    "payload_bytes",
+    "io_amplification_ratio",
+    "error",
+]
+
+
 def run_sweep(
     backends: list[str],
     youmu_data_dir: str,
@@ -274,8 +293,13 @@ def run_sweep(
     pred_len: int,
     num_iterations: int,
     warmup_iterations: int,
+    output_path: str | None = None,
 ) -> list[dict]:
     """Run the full benchmark sweep across all configurations.
+
+    If output_path is provided, results are written incrementally to CSV
+    after each configuration completes. This ensures partial results are
+    preserved if the process is OOM-killed mid-sweep.
 
     Args:
         backends: List of backend names to benchmark ("youmu", "lerobot").
@@ -287,6 +311,7 @@ def run_sweep(
         pred_len: Prediction length (fixed).
         num_iterations: Number of timed iterations per config.
         warmup_iterations: Number of warmup iterations per config.
+        output_path: Optional CSV path for incremental writes.
 
     Returns:
         List of result dicts, one per configuration.
@@ -294,6 +319,16 @@ def run_sweep(
     total_configs = len(backends) * len(obs_lens) * len(num_workers_list) * len(batch_sizes)
     print(f"Running {total_configs} configurations...")
     print()
+
+    # Set up incremental CSV writer if output_path provided
+    csv_file = None
+    csv_writer = None
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        csv_file = open(output_path, "w", newline="")
+        csv_writer = csv.DictWriter(csv_file, fieldnames=CSV_FIELDNAMES, extrasaction="ignore")
+        csv_writer.writeheader()
+        csv_file.flush()
 
     results = []
     config_idx = 0
@@ -320,14 +355,18 @@ def run_sweep(
                 for nw in num_workers_list:
                     for bs in batch_sizes:
                         config_idx += 1
-                        results.append({
+                        error_row = {
                             "backend": backend,
                             "obs_len": obs_len,
                             "pred_len": pred_len,
                             "num_workers": nw,
                             "batch_size": bs,
                             "error": str(e),
-                        })
+                        }
+                        results.append(error_row)
+                        if csv_writer:
+                            csv_writer.writerow(error_row)
+                            csv_file.flush()
                 continue
 
             for nw in num_workers_list:
@@ -383,11 +422,19 @@ def run_sweep(
                         print(f"ERROR: {e}")
 
                     results.append(row)
+                    # Flush result to CSV immediately so OOM kills don't lose data
+                    if csv_writer:
+                        csv_writer.writerow(row)
+                        csv_file.flush()
 
             # Free dataset between obs_len changes
             del dataset
             gc.collect()
             print()
+
+    if csv_file:
+        csv_file.close()
+        print(f"\nResults saved to {output_path}")
 
     return results
 
@@ -399,27 +446,9 @@ def save_csv(results: list[dict], output_path: str):
         results: List of result dicts.
         output_path: Path to output CSV file.
     """
-    fieldnames = [
-        "backend",
-        "obs_len",
-        "pred_len",
-        "num_workers",
-        "batch_size",
-        "samples_per_sec",
-        "time_to_first_sample_sec",
-        "peak_rss_mb",
-        "total_samples",
-        "total_time_sec",
-        "batches_completed",
-        "io_bytes_read",
-        "payload_bytes",
-        "io_amplification_ratio",
-        "error",
-    ]
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(results)
 
@@ -599,9 +628,9 @@ def main():
         pred_len=PRED_LEN,
         num_iterations=num_iterations,
         warmup_iterations=warmup_iterations,
+        output_path=args.output,
     )
 
-    save_csv(results, args.output)
     print_comparison_table(results)
 
 

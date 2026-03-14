@@ -98,7 +98,7 @@
         "Results show page-aligned throughput stable across RAM limits while row-range degrades"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "The sweep script already supports --backends flag. Just need to ensure benchmark_data_loading.py recognizes youmu_page_aligned. Drop page cache before each backend run (already implemented). Use iterations=50 for reasonable runtime. Skip 1G limit since both youmu backends need ~800MB base."
     },
     {
