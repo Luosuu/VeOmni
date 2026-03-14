@@ -107,6 +107,40 @@ def get_peak_rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
+def read_io_bytes() -> int:
+    """Read cumulative bytes read from disk via /proc/self/io.
+
+    Parses the 'read_bytes' line from /proc/self/io, which counts
+    bytes fetched from the storage layer (not just page cache).
+
+    Returns:
+        Cumulative read_bytes value.
+    """
+    with open("/proc/self/io") as f:
+        for line in f:
+            if line.startswith("read_bytes:"):
+                return int(line.split(":")[1].strip())
+    raise RuntimeError("Could not find read_bytes in /proc/self/io")
+
+
+def compute_payload_bytes(batch: dict) -> int:
+    """Compute the useful payload size in bytes for a batch of tensors.
+
+    Sums element_count * element_byte_size for every tensor in the batch.
+
+    Args:
+        batch: Dict of batch outputs from the DataLoader.
+
+    Returns:
+        Total payload bytes across all tensors in the batch.
+    """
+    total = 0
+    for v in batch.values():
+        if isinstance(v, torch.Tensor):
+            total += v.nelement() * v.element_size()
+    return total
+
+
 def benchmark_one_config(
     dataset,
     num_workers: int,
@@ -150,7 +184,9 @@ def benchmark_one_config(
 
     # Timed phase
     rss_before = get_peak_rss_mb()
+    io_before = read_io_bytes()
     total_samples = 0
+    total_payload_bytes = 0
     time_to_first = None
     start = time.perf_counter()
 
@@ -167,12 +203,23 @@ def benchmark_one_config(
         else:
             total_samples += batch_size
 
+        # Accumulate payload bytes
+        total_payload_bytes += compute_payload_bytes(batch)
+
         batch_count += 1
         if batch_count >= num_iterations:
             break
 
     total_time = time.perf_counter() - start
+    io_after = read_io_bytes()
     rss_after = get_peak_rss_mb()
+
+    io_bytes_read = io_after - io_before
+    io_amplification = (
+        round(io_bytes_read / total_payload_bytes, 4)
+        if total_payload_bytes > 0
+        else None
+    )
 
     # Cleanup persistent workers
     del loader
@@ -185,6 +232,9 @@ def benchmark_one_config(
         "time_to_first_sample_sec": round(time_to_first, 4) if time_to_first is not None else None,
         "peak_rss_mb": round(max(rss_before, rss_after), 2),
         "batches_completed": batch_count,
+        "io_bytes_read": io_bytes_read,
+        "payload_bytes": total_payload_bytes,
+        "io_amplification_ratio": io_amplification,
     }
 
 
@@ -277,12 +327,21 @@ def run_sweep(
                             "total_samples": metrics["total_samples"],
                             "total_time_sec": metrics["total_time_sec"],
                             "batches_completed": metrics["batches_completed"],
+                            "io_bytes_read": metrics["io_bytes_read"],
+                            "payload_bytes": metrics["payload_bytes"],
+                            "io_amplification_ratio": metrics["io_amplification_ratio"],
                             "error": "",
                         }
+                        io_amp_str = (
+                            f"{metrics['io_amplification_ratio']:.2f}x"
+                            if metrics["io_amplification_ratio"] is not None
+                            else "N/A"
+                        )
                         print(
                             f"{metrics['samples_per_sec']:.2f} samples/s, "
                             f"first={metrics['time_to_first_sample_sec']:.4f}s, "
-                            f"rss={metrics['peak_rss_mb']:.0f}MB"
+                            f"rss={metrics['peak_rss_mb']:.0f}MB, "
+                            f"io_amp={io_amp_str}"
                         )
                     except Exception as e:
                         row = {
@@ -324,6 +383,9 @@ def save_csv(results: list[dict], output_path: str):
         "total_samples",
         "total_time_sec",
         "batches_completed",
+        "io_bytes_read",
+        "payload_bytes",
+        "io_amplification_ratio",
         "error",
     ]
 

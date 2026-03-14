@@ -47,3 +47,29 @@ Started: Sat Mar 14 05:06:40 UTC 2026
   - Rust must be installed (`rustup`) and maturin must be available to rebuild Youmu: `PATH="$HOME/.cargo/bin:$PATH" && maturin develop --release`
   - Generate test fixtures before running tests: `python test/fixtures/generate_test_parquet.py && python test/fixtures/generate_libero_fixture.py`
 ---
+
+## 2026-03-14 - US-003
+- Extended `scripts/benchmark_data_loading.py` with I/O efficiency metrics
+- **New functions:**
+  - `read_io_bytes()`: reads cumulative `read_bytes` from `/proc/self/io` to measure actual disk I/O
+  - `compute_payload_bytes(batch)`: sums `nelement() * element_size()` across all tensors in a batch
+- **Integration into `benchmark_one_config`:**
+  - Reads `/proc/self/io` before and after timed phase to get `io_bytes_read` delta
+  - Accumulates `payload_bytes` across all batches via `compute_payload_bytes`
+  - Computes `io_amplification_ratio = io_bytes_read / payload_bytes`
+- **CSV output:** Added 3 new columns: `io_bytes_read`, `payload_bytes`, `io_amplification_ratio`
+- **Console output:** Added `io_amp=Nx` to per-config print line
+- **Tests:** 14 new tests in `tests/test_benchmark_io_metrics.py`:
+  - 2 unit tests for `read_io_bytes` (non-negative, monotonic)
+  - 6 unit tests for `compute_payload_bytes` (single tensor, multiple, empty, non-tensor, mixed dtypes)
+  - 5 integration tests for `benchmark_one_config` I/O metrics (presence, non-negative, positive, scaling, ratio correctness)
+  - 1 CSV field coverage test
+- Files changed:
+  - `scripts/benchmark_data_loading.py` (added `read_io_bytes`, `compute_payload_bytes`, updated `benchmark_one_config`, `save_csv`, `run_sweep`)
+  - `tests/test_benchmark_io_metrics.py` (new, 14 tests)
+  - `scripts/ralph/prd.json` (US-003 passes: true)
+- **Learnings for future iterations:**
+  - `/proc/self/io` `read_bytes` counts bytes from the storage layer, not page cache — it's the right counter for measuring actual disk I/O
+  - `torch.Tensor.nelement() * element_size()` gives exact byte size regardless of dtype
+  - The FakeDataset in tests uses in-memory random tensors so `io_bytes_read` may be 0 — tests assert `>= 0` not `> 0`
+---

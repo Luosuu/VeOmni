@@ -46,7 +46,7 @@
         "Tests pass"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "Read /proc/self/io before and after benchmark to get read_bytes delta. Useful payload = sum of all tensor element counts * element byte size across all samples. The benchmark already supports youmu and lerobot backends. Since US-002 modifies LiberoYoumuDataset in-place, the existing youmu backend will automatically use the new multi-column reads."
     },
     {
