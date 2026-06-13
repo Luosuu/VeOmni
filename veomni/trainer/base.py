@@ -61,6 +61,7 @@ from ..distributed.parallel_state import init_parallel_state
 from ..distributed.torch_parallelize import build_parallelize_model
 from ..models import build_foundation_model, build_tokenizer
 from ..ops.batch_invariant_ops import set_batch_invariant_mode
+from ..ops.torchao_float8 import apply_torchao_float8_training
 from ..optim import build_lr_scheduler, build_optimizer
 from ..utils import helper, logging
 from ..utils.device import (
@@ -415,6 +416,7 @@ class BaseTrainer(Stateful, ABC):
 
     def _freeze_model_module(self):
         self._setup_lora()
+        self.model = apply_torchao_float8_training(self.model, self.args)
         pretty_print_trainable_parameters(self.model)
         helper.print_device_mem_info("VRAM usage after building model")
 

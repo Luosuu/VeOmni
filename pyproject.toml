@@ -65,6 +65,7 @@ gpu = [
   "liger-kernel",
   "flash-linear-attention",
   "quack-kernels[cu13]==0.5.0",
+  "torchao==0.17.0+cu130",
   "torch-c-dlpack-ext",
   "av>=14.3.0,<15.0; python_version == '3.11'",
   "av>=14.0.0,<14.3; python_version == '3.12'",
@@ -183,6 +184,7 @@ torch = [
 ]
 torchvision = { index = "pytorch" }
 torchaudio = { index = "pytorch" }
+torchao = { index = "pytorch" }
 # FA2 + FA3 use prebuilt wheels hosted by @Luosuu, ABI-aligned with our
 # torch 2.11.0+cu130 cxx11abi=true stack:
 #   - FA2 cp311 (v0.0.3) and cp312 (v0.0.5), both sm80/89/90/100 — covers

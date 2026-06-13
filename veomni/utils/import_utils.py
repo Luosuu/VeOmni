@@ -91,6 +91,22 @@ def is_quack_gemm_available() -> bool:
     return is_quack_package_available() and not _PACKAGE_FLAGS["torch_npu"] and is_sm90_or_above()
 
 
+def is_torchao_mxfp8_grouped_gemm_available() -> bool:
+    """Check if TorchAO MXFP8 grouped GEMM kernels can run on the current GPU."""
+    if _PACKAGE_FLAGS["torch_npu"]:
+        return False
+    from .device import get_gpu_compute_capability
+
+    if get_gpu_compute_capability() < 100:
+        return False
+    try:
+        from veomni.ops.kernels.moe.torch_scaled_grouped_gemm import is_torch_scaled_grouped_gemm_available
+    except Exception:
+        return False
+
+    return is_torch_scaled_grouped_gemm_available()
+
+
 def is_video_audio_available() -> bool:
     return _PACKAGE_FLAGS["av"] and _PACKAGE_FLAGS["librosa"] and _PACKAGE_FLAGS["soundfile"]
 

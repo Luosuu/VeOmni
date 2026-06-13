@@ -22,6 +22,7 @@ from ..arguments import DataArguments, ModelArguments, TrainingArguments, VeOmni
 from ..data import MainCollator, build_data_transform, build_multimodal_chat_template
 from ..distributed.clip_grad_norm import veomni_clip_grad_norm
 from ..models import build_foundation_model, build_processor
+from ..ops.torchao_float8 import apply_torchao_float8_training
 from ..optim import build_optimizer
 from ..utils import helper
 from ..utils.device import synchronize
@@ -172,6 +173,7 @@ class VLMTrainer:
             )
             audio_proj.requires_grad_(True)
 
+        self.base.model = apply_torchao_float8_training(self.base.model, args)
         pretty_print_trainable_parameters(self.base.model)
         helper.print_device_mem_info("VRAM usage after building model")
 

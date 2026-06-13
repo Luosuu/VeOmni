@@ -526,6 +526,29 @@ class TrainingArguments:
             )
         },
     )
+    enable_torchao_float8: bool = field(
+        default=False,
+        metadata={"help": "Enable TorchAO Float8Linear training for eligible nn.Linear modules before FSDP wrapping."},
+    )
+    torchao_float8_recipe_name: Literal["tensorwise", "rowwise", "rowwise_with_gw_hp", "mxfp8", "mxfp8_with_gw_hp"] = (
+        field(
+            default="rowwise",
+            metadata={
+                "help": (
+                    "TorchAO dense Linear recipe name. tensorwise/rowwise/rowwise_with_gw_hp use "
+                    "Float8Linear; mxfp8/mxfp8_with_gw_hp use TorchAO prototype MXFP8 Linear."
+                )
+            },
+        )
+    )
+    torchao_float8_filter_fqns: List[str] = field(
+        default_factory=lambda: ["lm_head", "lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B"],
+        metadata={"help": "FQN substrings of nn.Linear modules to skip when enabling TorchAO float8 training."},
+    )
+    torchao_float8_auto_filter_small_kn: bool = field(
+        default=True,
+        metadata={"help": "Use TorchAO's recipe-specific filter to skip small Linear layers when available."},
+    )
 
     # sub-argument groups
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
@@ -750,7 +773,7 @@ class OpsImplementationConfig:
         default="fused_triton",
         metadata={
             "help": "MoE experts forward. 'fused_triton' (default, GPU SM70+) | "
-            "'fused_quack' (GPU SM90+) | 'fused_npu' (NPU) | 'eager'. "
+            "'fused_quack' (GPU SM90+) | 'fused_torchao_mxfp8' (GPU SM100+) | 'fused_npu' (NPU) | 'eager'. "
             "Hardware mismatch raises at config validation. Legacy 'fused' "
             "auto-resolves to fused_quack/fused_npu with a deprecation warning."
         },

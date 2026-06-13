@@ -19,6 +19,7 @@ from ....utils.import_utils import (
     is_fused_moe_available,
     is_quack_gemm_available,
     is_torch_npu_available,
+    is_torchao_mxfp8_grouped_gemm_available,
 )
 
 
@@ -66,6 +67,7 @@ def apply_veomni_fused_moe_patch(fused_moe_kernel: str = "triton") -> None:
         fused_moe_kernel: Which fused MoE kernel to activate. OSS values:
             ``"triton"`` (Triton group-gemm, GPU, SM70+),
             ``"quack"`` (Quack CUTLASS/CuTe, GPU, SM90+),
+            ``"torchao_mxfp8"`` (TorchAO MXFP8 grouped GEMM, GPU SM100+),
             ``"npu"`` (NPU group-gemm, requires torch_npu).
             The kernel must match the hardware; mismatches raise here rather
             than silently falling back to a different backend.
@@ -96,6 +98,17 @@ def apply_veomni_fused_moe_patch(fused_moe_kernel: str = "triton") -> None:
         from .quack_gemm import quack_gemm_fused_moe_forward
 
         _fused_moe_forward = quack_gemm_fused_moe_forward
+    elif fused_moe_kernel == "torchao_mxfp8":
+        if is_torch_npu_available():
+            raise RuntimeError("fused_moe_kernel='torchao_mxfp8' is GPU-only. Use 'npu' on NPU devices.")
+        if not is_torchao_mxfp8_grouped_gemm_available():
+            raise RuntimeError(
+                "fused_moe_kernel='torchao_mxfp8' requires TorchAO MXFP8 grouped GEMM support on an SM100+ GPU. "
+                "Install Open-VeOmni with the gpu_mxfp8 extra."
+            )
+        from .quack_gemm import torch_scaled_grouped_gemm_fused_moe_forward
+
+        _fused_moe_forward = torch_scaled_grouped_gemm_fused_moe_forward
     elif fused_moe_kernel == "triton":
         if is_torch_npu_available():
             raise RuntimeError("fused_moe_kernel='triton' is GPU-only. Use 'npu' on NPU devices.")
@@ -105,7 +118,10 @@ def apply_veomni_fused_moe_patch(fused_moe_kernel: str = "triton") -> None:
 
         _fused_moe_forward = group_gemm_fused_moe_forward
     else:
-        raise ValueError(f"Invalid fused_moe_kernel: {fused_moe_kernel!r}. Expected one of: 'triton', 'quack', 'npu'.")
+        raise ValueError(
+            f"Invalid fused_moe_kernel: {fused_moe_kernel!r}. "
+            "Expected one of: 'triton', 'quack', 'torchao_mxfp8', 'npu'."
+        )
 
 
 # ── OpSlot kernel registrations ──────────────────────────────────────────────
@@ -177,6 +193,24 @@ KERNEL_REGISTRY.register(
         factory=_quack_kernel_factory,
         hardware=HardwareRequirement(device_type="gpu", min_compute_capability=90),
         description="Quack CUTLASS/CuTe fused MoE forward (SM90+)",
+    )
+)
+
+
+def _torchao_mxfp8_kernel_factory():
+    from .quack_gemm import torch_scaled_grouped_gemm_fused_moe_forward
+
+    return _make_moe_experts_adapter(torch_scaled_grouped_gemm_fused_moe_forward)
+
+
+KERNEL_REGISTRY.register(
+    KernelSpec(
+        name="torchao_mxfp8",
+        op_name="moe_experts",
+        variant="standard",
+        factory=_torchao_mxfp8_kernel_factory,
+        hardware=HardwareRequirement(device_type="gpu", min_compute_capability=100),
+        description="TorchAO MXFP8 grouped GEMM fused MoE forward/backward (SM100+)",
     )
 )
 
