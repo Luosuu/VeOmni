@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
 import torch
 
 
@@ -112,23 +113,11 @@ def test_varlen_k_pads_ragged_token_groups(monkeypatch):
     assert seen_offsets[0].tolist() == [32, 64]
 
 
-def test_varlen_m_passes_more_than_32_groups_to_torchao(monkeypatch):
-    calls = []
-
-    class FakeKernelPreference:
-        AUTO = object()
-
-    class FakeScaleCalculationMode:
-        RCEIL = object()
-
-    def fake_to_mxfp8_grouped_mm(a, b, *, offs, block_size, out_dtype, **kwargs):
-        calls.append((a.shape, b.shape, offs.tolist(), block_size, out_dtype))
-        return torch.full((a.shape[0], b.shape[-1]), 1, dtype=out_dtype)
-
+def test_varlen_m_rejects_more_than_32_groups_before_torchao(monkeypatch):
     monkeypatch.setattr(
         torch_scaled_grouped_gemm,
         "_torchao_imports",
-        lambda: (None, fake_to_mxfp8_grouped_mm, None, FakeScaleCalculationMode, FakeKernelPreference),
+        lambda: (_ for _ in ()).throw(AssertionError("_torchao_imports should not be called")),
     )
 
     num_groups = 34
@@ -137,38 +126,15 @@ def test_varlen_m_passes_more_than_32_groups_to_torchao(monkeypatch):
     a = torch.empty(int(cu[-1].item()), 8)
     b = torch.empty(num_groups, 8, 4)
 
-    out = torch_scaled_grouped_gemm.torch_scaled_grouped_varlen_m_gemm(a, b, cu, out_dtype=torch.bfloat16)
-
-    assert out.shape == (num_groups, 4)
-    assert calls == [(torch.Size([34, 8]), torch.Size([34, 8, 4]), list(range(1, 35)), 32, torch.bfloat16)]
+    with pytest.raises(RuntimeError, match="at most 32 local expert groups"):
+        torch_scaled_grouped_gemm.torch_scaled_grouped_varlen_m_gemm(a, b, cu, out_dtype=torch.bfloat16)
 
 
-def test_varlen_k_passes_more_than_32_groups_to_torchao(monkeypatch):
-    calls = []
-
-    class FakeKernelPreference:
-        AUTO = object()
-
-    class FakeScaleCalculationMode:
-        RCEIL = object()
-
-    def fake_compute_wgrad(grad_output, input_act, group_end_offsets, block_size, out_dtype, *args):
-        calls.append((grad_output.shape, input_act.shape, group_end_offsets.tolist(), block_size, out_dtype))
-        return torch.full((group_end_offsets.numel(), input_act.shape[1], grad_output.shape[1]), 1, dtype=out_dtype)
-
-    def fake_pad_token_groups(x, offs, *, alignment_size, kernel_preference):
-        return x, None, offs
-
+def test_varlen_k_rejects_more_than_32_groups_before_torchao(monkeypatch):
     monkeypatch.setattr(
         torch_scaled_grouped_gemm,
         "_torchao_imports",
-        lambda: (
-            fake_compute_wgrad,
-            None,
-            fake_pad_token_groups,
-            FakeScaleCalculationMode,
-            FakeKernelPreference,
-        ),
+        lambda: (_ for _ in ()).throw(AssertionError("_torchao_imports should not be called")),
     )
 
     num_groups = 34
@@ -177,10 +143,8 @@ def test_varlen_k_passes_more_than_32_groups_to_torchao(monkeypatch):
     a = torch.empty(8, int(cu[-1].item()))
     b = torch.empty(int(cu[-1].item()), 4)
 
-    out = torch_scaled_grouped_gemm.torch_scaled_grouped_varlen_k_gemm(a, b, cu, out_dtype=torch.bfloat16)
-
-    assert out.shape == (num_groups, 8, 4)
-    assert calls == [(torch.Size([34, 8]), torch.Size([34, 4]), list(range(1, 35)), 32, torch.bfloat16)]
+    with pytest.raises(RuntimeError, match="at most 32 local expert groups"):
+        torch_scaled_grouped_gemm.torch_scaled_grouped_varlen_k_gemm(a, b, cu, out_dtype=torch.bfloat16)
 
 
 def test_torchao_import_error_is_actionable(monkeypatch):

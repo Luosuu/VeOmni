@@ -19,6 +19,7 @@ from torch import Tensor
 
 
 MXFP8_BLOCK_SIZE = 32
+TORCHAO_MAX_GROUPS = 32
 
 
 def is_torch_scaled_grouped_gemm_available() -> bool:
@@ -54,6 +55,18 @@ def _to_group_end_offsets(cu_seqlens: Tensor) -> Tensor:
     return cu_seqlens[1:].contiguous().to(torch.int32)
 
 
+def _validate_group_count(group_end_offsets: Tensor) -> None:
+    num_groups = group_end_offsets.numel()
+    if num_groups > TORCHAO_MAX_GROUPS:
+        raise RuntimeError(
+            "TorchAO MXFP8 grouped GEMM currently supports at most "
+            f"{TORCHAO_MAX_GROUPS} local expert groups because its fused "
+            f"token-padding kernel is limited to 32 groups, got {num_groups}. "
+            "Use expert parallelism so each rank owns <=32 experts, or use a "
+            "non-MXFP8 MoE kernel for this configuration."
+        )
+
+
 def _use_hp_wgrad() -> bool:
     return os.getenv("VEOMNI_TORCHAO_MXFP8_WGRAD_WITH_HP", "1").lower() in {"1", "true", "yes", "on"}
 
@@ -73,6 +86,9 @@ def torch_scaled_grouped_varlen_m_gemm(
     out_dtype: torch.dtype | None = None,
 ) -> Tensor:
     """Compute per-expert ``A @ B`` using TorchAO SM100 MXFP8 grouped GEMM."""
+    group_end_offsets = _to_group_end_offsets(cu_seqlens_m)
+    _validate_group_count(group_end_offsets)
+
     if a_idx is not None:
         a = a[a_idx.long()]
     a = a.contiguous()
@@ -83,7 +99,7 @@ def torch_scaled_grouped_varlen_m_gemm(
     return to_mxfp8_grouped_mm(
         a,
         b_lkn,
-        offs=_to_group_end_offsets(cu_seqlens_m),
+        offs=group_end_offsets,
         block_size=MXFP8_BLOCK_SIZE,
         out_dtype=out_dtype,
         kernel_preference=KernelPreference.AUTO,
@@ -108,9 +124,10 @@ def torch_scaled_grouped_varlen_k_gemm(
     Returns:
         ``(num_experts, m, n)``, matching ``quack.gemm(..., cu_seqlens_k=...)``.
     """
+    group_end_offsets = _to_group_end_offsets(cu_seqlens_k)
+    _validate_group_count(group_end_offsets)
     out_dtype = a.dtype if out_dtype is None else out_dtype
     compute_wgrad, _, pad_token_groups, ScaleCalculationMode, KernelPreference = _torchao_imports()
-    group_end_offsets = _to_group_end_offsets(cu_seqlens_k)
 
     grad_output = a.transpose(-2, -1).contiguous()
     input_act = b.contiguous()
