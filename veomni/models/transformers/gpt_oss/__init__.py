@@ -11,7 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from ....lora.target_mapping import convert_fused_moe_lora_targets
 from ...loader import MODELING_REGISTRY
+
+
+def _convert_gpt_oss_lora_targets_to_parameters(_model, lora_modules, target_parameter_patterns):
+    return convert_fused_moe_lora_targets(
+        lora_modules,
+        target_parameter_patterns,
+        "model.layers.*.mlp.experts.gate_up_proj",
+        "model.layers.*.mlp.experts.down_proj",
+    )
 
 
 @MODELING_REGISTRY.register("gpt_oss")
@@ -30,6 +40,13 @@ def register_gpt_oss_modeling(architecture: str):
         GptOssForTokenClassification,
         GptOssModel,
     )
+
+    for model_cls in (
+        GptOssForCausalLM,
+        GptOssForSequenceClassification,
+        GptOssForTokenClassification,
+    ):
+        model_cls._convert_lora_targets_to_parameters = staticmethod(_convert_gpt_oss_lora_targets_to_parameters)
 
     if "ForSequenceClassification" in architecture:
         return GptOssForSequenceClassification

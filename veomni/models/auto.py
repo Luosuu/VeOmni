@@ -86,7 +86,7 @@ def _bind_veomni_ops(modeling_module, ops_config: OpsImplementationConfig) -> bo
                 if ops_config.moe_implementation == "eager"
                 else ops_config.moe_implementation.removeprefix("fused_")
             )
-            if impl_name != "eager" and obj.variant == "standard":
+            if impl_name != "eager":
                 moe_experts_kernel = impl_name
         elif obj.op_name == "mhc":
             impl_name = ops_config.mhc_backend

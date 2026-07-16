@@ -14,7 +14,7 @@
 
 """Fused MoE-LoRA kernels and their dispatch, owned by the native LoRA stack.
 
-There is one kernel implementation per hardware backend, both owned here so only
+There is one kernel implementation per supported hardware/backend layout, all owned here so only
 the LoRA math lives in this package — never the low-level GEMM/dispatch:
 
   * ``triton`` (GPU) — :mod:`.moe_group_gemm`: four ``autograd.Function``
@@ -26,6 +26,8 @@ the LoRA math lives in this package — never the low-level GEMM/dispatch:
     the ``npu_group_gemm`` autograd ``Function``) from
     ``veomni.ops.kernels.moe.npu_group_gemm`` and injects the LoRA deltas;
     backward is derived by autograd (no hand-written kernel).
+  * ``quack`` (GPT-OSS) — :mod:`.gpt_oss_quack`: hand-written forward and
+    backward for GPT-OSS's interleaved gate/up layout, including EP dispatch.
 
 Dispatch model
 --------------
@@ -34,10 +36,9 @@ Whether a LoRA-aware fused kernel is available is a property of the active
 :func:`veomni.ops.kernels.moe.apply_veomni_fused_moe_patch`: after it selects a
 base backend it calls :func:`bind_lora_moe_kernels` here to point (or clear) the
 module-level ``_fused_lora_moe_forward`` / ``_fused_independent_lora_moe_forward``
-pointers. ``triton`` (GPU) and ``npu`` both ship LoRA kernels — including the
-EP-aware path — so LoRA + expert parallelism works on either backend; ``quack``
-clears the pointers and the wrappers in :mod:`veomni.lora.moe_layers` fall back
-to eager (which raises under EP).
+pointers. ``triton`` (GPU) and ``npu`` ship the standard LoRA kernels, while
+``quack`` binds the GPT-OSS-specific shared-LoRA kernel. All three include an
+EP-aware path. Other Quack model layouts still have no LoRA-aware kernel.
 
 The MoE-LoRA wrappers read the pointers directly (``from . import ops`` inside
 their ``forward``); the public :func:`fused_lora_moe_forward` /
@@ -53,7 +54,8 @@ import torch
 # Function pointers for the LoRA-aware fused MoE paths. ``None`` means "no
 # fused-LoRA kernel bound for the active ``moe_implementation``" — in that case
 # the wrappers in ``veomni.lora.moe_layers`` keep using their eager forwards.
-# Bound for ``triton`` (GPU) and ``npu``; ``quack`` leaves them ``None``.
+# The standard pointers are bound for ``triton`` (GPU) and ``npu``. Quack
+# leaves those two clear and binds the GPT-OSS-specific pointer below.
 #
 # * ``_fused_lora_moe_forward`` — Mode 2 (shared LoRA across experts), used by
 #   ``LoraSharedExperts``.
@@ -61,20 +63,23 @@ import torch
 #   LoRA), used by ``LoraIndependentExperts``.
 _fused_lora_moe_forward = None
 _fused_independent_lora_moe_forward = None
+# GPT-OSS uses an interleaved ``[E, H, 2I]`` gate/up layout and a different
+# activation, so its Quack LoRA kernel cannot share the standard pointer above.
+_gpt_oss_quack_lora_moe_forward = None
 
 
 def bind_lora_moe_kernels(fused_moe_kernel: str) -> None:
     """Bind (or clear) the LoRA fused-MoE pointers to match the base MoE backend.
 
     Called by :func:`veomni.ops.kernels.moe.apply_veomni_fused_moe_patch` right
-    after it selects the base ``_fused_moe_forward`` kernel. Only ``"triton"``
-    ships LoRA-aware kernels today; every other backend clears the pointers so
-    the wrappers fall back to their eager forwards.
+    after it selects the base ``_fused_moe_forward`` kernel. Triton and NPU
+    bind the standard layouts; Quack binds the GPT-OSS shared-LoRA layout.
 
     The kernel import is local so this stays free of an ``ops`` <-> ``lora``
     import cycle (the base MoE patch calls this lazily).
     """
     global _fused_lora_moe_forward, _fused_independent_lora_moe_forward
+    global _gpt_oss_quack_lora_moe_forward
     if fused_moe_kernel == "triton":
         from .moe_group_gemm import (
             group_gemm_fused_independent_lora_moe_forward,
@@ -83,6 +88,7 @@ def bind_lora_moe_kernels(fused_moe_kernel: str) -> None:
 
         _fused_lora_moe_forward = group_gemm_fused_lora_moe_forward
         _fused_independent_lora_moe_forward = group_gemm_fused_independent_lora_moe_forward
+        _gpt_oss_quack_lora_moe_forward = None
     elif fused_moe_kernel == "npu":
         # NPU reuses its base fused-MoE all-to-all EP dispatch/combine and adds
         # the seed-style LoRA deltas on the dispatched tokens — MoE-LoRA and EP
@@ -95,10 +101,20 @@ def bind_lora_moe_kernels(fused_moe_kernel: str) -> None:
 
         _fused_lora_moe_forward = npu_fused_lora_moe_forward
         _fused_independent_lora_moe_forward = npu_fused_independent_lora_moe_forward
-    else:
-        # Quack has no LoRA-aware fused kernel yet → eager fallback.
+        _gpt_oss_quack_lora_moe_forward = None
+    elif fused_moe_kernel == "quack":
+        from .gpt_oss_quack import quack_gemm_gpt_oss_fused_lora_moe_forward
+
+        # The standard Qwen-style pointers stay clear: only the GPT-OSS
+        # interleaved shared-LoRA wrapper may dispatch to this kernel.
         _fused_lora_moe_forward = None
         _fused_independent_lora_moe_forward = None
+        _gpt_oss_quack_lora_moe_forward = quack_gemm_gpt_oss_fused_lora_moe_forward
+    else:
+        # Unknown/unsupported backend: leave every LoRA dispatcher unbound.
+        _fused_lora_moe_forward = None
+        _fused_independent_lora_moe_forward = None
+        _gpt_oss_quack_lora_moe_forward = None
 
 
 def fused_lora_moe_forward(

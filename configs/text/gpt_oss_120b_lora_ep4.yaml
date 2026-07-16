@@ -27,6 +27,13 @@ model:
       - k_proj
       - v_proj
       - o_proj
+      - gate_proj
+      - up_proj
+      - down_proj
+    # GPT-OSS uses 128 experts per layer. Sharing each expert adapter across
+    # the layer keeps optimizer state small while the base experts remain
+    # sharded across EP ranks.
+    share_expert_lora: true
 
 data:
   # Download with:
