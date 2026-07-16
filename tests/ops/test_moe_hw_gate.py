@@ -179,6 +179,36 @@ def test_bind_veomni_ops_translates_moe_implementation_and_checks_hw(_mock_cc, _
         _bind_veomni_ops(fake_module, ops_config)
 
 
+def test_bind_veomni_ops_propagates_variant_moe_backend_to_fused_dispatch():
+    """Variant-specific slots must also bind the global LoRA MoE dispatcher."""
+    from types import SimpleNamespace
+
+    from veomni.arguments.arguments_types import OpsImplementationConfig
+    from veomni.models.auto import _bind_veomni_ops
+
+    ops_config = OpsImplementationConfig(
+        attn_implementation="eager",
+        moe_implementation="fused_quack",
+        cross_entropy_loss_implementation="eager",
+        rms_norm_implementation="eager",
+        swiglu_mlp_implementation="eager",
+        rotary_pos_emb_implementation="eager",
+        load_balancing_loss_implementation="eager",
+        rms_norm_gated_implementation="eager",
+        causal_conv1d_implementation="eager",
+        chunk_gated_delta_rule_implementation="eager",
+    )
+    fake_module = SimpleNamespace(veomni_moe_experts_forward=OpSlot("moe_experts", "gpt_oss"))
+
+    with (
+        patch.object(KERNEL_REGISTRY, "resolve", return_value=lambda *args, **kwargs: None),
+        patch("veomni.ops.kernels.moe.apply_veomni_fused_moe_patch") as apply_patch,
+    ):
+        assert _bind_veomni_ops(fake_module, ops_config)
+
+    apply_patch.assert_called_once_with(fused_moe_kernel="quack")
+
+
 def test_bind_veomni_ops_binds_model_registered_config_slots():
     from types import SimpleNamespace
 

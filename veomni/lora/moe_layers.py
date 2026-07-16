@@ -328,6 +328,36 @@ def _validate_fused_layout(base_layer: nn.Module) -> None:
     )
 
 
+def _is_gpt_oss_interleaved_layout(base_layer: nn.Module) -> bool:
+    """Return whether ``base_layer`` owns GPT-OSS's ``[E, H, 2I]`` experts."""
+    if not all(
+        hasattr(base_layer, name)
+        for name in (
+            "hidden_size",
+            "intermediate_size",
+            "gate_up_proj",
+            "gate_up_proj_bias",
+            "down_proj",
+            "down_proj_bias",
+            "alpha",
+            "limit",
+        )
+    ):
+        return False
+    gate_up = base_layer.gate_up_proj
+    down = base_layer.down_proj
+    return (
+        gate_up.ndim == 3
+        and down.ndim == 3
+        and gate_up.shape[-2:]
+        == (
+            base_layer.hidden_size,
+            2 * base_layer.intermediate_size,
+        )
+        and down.shape[-2:] == (base_layer.intermediate_size, base_layer.hidden_size)
+    )
+
+
 class LoraSharedExperts(nn.Module):
     """Wrap a MoE experts module to add a single LoRA pair shared across experts.
 
@@ -400,9 +430,17 @@ class LoraSharedExperts(nn.Module):
         # Geometry sourced from the base module — these are the standard
         # attribute names used across all v5-patched Qwen3 MoE families.
         self.num_experts = base_layer.num_experts
-        self.hidden_dim = base_layer.hidden_dim
-        self.intermediate_dim = base_layer.intermediate_dim
-        self.act_fn = base_layer.act_fn
+        self._gpt_oss_interleaved = _is_gpt_oss_interleaved_layout(base_layer)
+        if self._gpt_oss_interleaved:
+            self.hidden_dim = base_layer.hidden_size
+            self.intermediate_dim = base_layer.intermediate_size
+            self.alpha = base_layer.alpha
+            self.limit = base_layer.limit
+            self.act_fn = None
+        else:
+            self.hidden_dim = base_layer.hidden_dim
+            self.intermediate_dim = base_layer.intermediate_dim
+            self.act_fn = base_layer.act_fn
 
         # Steal the base experts' Parameters / Buffers, then re-register
         # the Parameters under per-spec sub-modules at the PEFT-aligned
@@ -445,6 +483,11 @@ class LoraSharedExperts(nn.Module):
         self.add_module("down_proj", _LoraSpec(base_param=base_params["down_proj"]))
         self.add_module("gate_proj", _LoraSpec())
         self.add_module("up_proj", _LoraSpec())
+        # GPT-OSS expert biases retain their original FQNs so the normal
+        # checkpoint loader and ExtraParallel plan continue to find them.
+        for name, param in base_params.items():
+            if name not in ("gate_up_proj", "down_proj"):
+                self.register_parameter(name, param)
 
         # Inherit dtype/device from the lifted fused base (always present
         # after ``_validate_fused_layout``) so new Linears land on the
@@ -651,14 +694,25 @@ class LoraSharedExperts(nn.Module):
         self._ensure_ep_grad_sync_hooks()
         # Fused-kernel path: available when the user opted into a non-eager
         # ``moe_implementation`` whose patch function bound a LoRA-aware
-        # kernel ('fused_triton' on GPU, 'fused_npu' on NPU; Quack leaves
-        # ``_fused_lora_moe_forward = None`` so we transparently fall back to
-        # eager). The bound kernel handles the EP branch internally (Triton via
+        # kernel ('fused_triton' on GPU, 'fused_npu' on NPU, or GPT-OSS's
+        # dedicated shared-LoRA Quack pointer). The bound kernel handles the EP branch internally (Triton via
         # ``preprocess`` / ``token_pre_all2all`` / ``EPMergedFc1SharedLoRAGroupGemm``
         # / ``tokens_post_all2all``; NPU via its all-to-all dispatch/combine) —
         # no EP gating needed here.
         from ..distributed.parallel_state import get_parallel_state
         from . import ops as _lora_ops
+
+        if self._gpt_oss_interleaved:
+            if _lora_ops._gpt_oss_quack_lora_moe_forward is not None:
+                return self._gpt_oss_fused_forward(
+                    _lora_ops._gpt_oss_quack_lora_moe_forward,
+                    hidden_states,
+                    top_k_index,
+                    top_k_weights,
+                )
+            if get_parallel_state().ep_enabled:
+                raise RuntimeError("GPT-OSS shared MoE-LoRA with expert parallelism requires the fused_quack backend.")
+            return self._gpt_oss_eager_forward(hidden_states, top_k_index, top_k_weights)
 
         if _lora_ops._fused_lora_moe_forward is not None:
             return self._fused_forward(_lora_ops._fused_lora_moe_forward, hidden_states, top_k_index, top_k_weights)
@@ -675,6 +729,78 @@ class LoraSharedExperts(nn.Module):
                 "to use the EP-aware fused LoRA path, or disable EP."
             )
         return self._eager_forward(hidden_states, top_k_index, top_k_weights)
+
+    def _gpt_oss_fused_forward(
+        self,
+        fused_kernel,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        return fused_kernel(
+            num_experts=self.num_experts,
+            routing_weights=top_k_weights.to(hidden_states.dtype),
+            selected_experts=top_k_index,
+            hidden_states=hidden_states,
+            gate_up_proj=self.gate_up_proj.base_layer.weight,
+            gate_up_proj_bias=self.gate_up_proj_bias,
+            down_proj=self.down_proj.base_layer.weight,
+            down_proj_bias=self.down_proj_bias,
+            lora_a_gate=self.get_lora_A_weight("gate_proj"),
+            lora_b_gate=self.get_lora_B_weight("gate_proj"),
+            lora_a_up=self.get_lora_A_weight("up_proj"),
+            lora_b_up=self.get_lora_B_weight("up_proj"),
+            lora_a_down=self.get_lora_A_weight("down_proj"),
+            lora_b_down=self.get_lora_B_weight("down_proj"),
+            lora_scale_gate=self._lora_scale_value,
+            lora_scale_up=self._lora_scale_value,
+            lora_scale_down=self._lora_scale_value,
+            alpha=self.alpha,
+            limit=self.limit,
+        )
+
+    def _gpt_oss_eager_forward(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        scale = self.lora_scaling.to(hidden_states.dtype)
+        final_hidden_states = torch.zeros_like(hidden_states)
+        with torch.no_grad():
+            expert_mask = F.one_hot(top_k_index, num_classes=self.num_experts).permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        gate_delta_all = (
+            F.linear(F.linear(hidden_states, self.get_lora_A_weight("gate_proj")), self.get_lora_B_weight("gate_proj"))
+            * scale
+        )
+        up_delta_all = (
+            F.linear(F.linear(hidden_states, self.get_lora_A_weight("up_proj")), self.get_lora_B_weight("up_proj"))
+            * scale
+        )
+        for expert_idx in expert_hit.flatten():
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = hidden_states[token_idx]
+            gate_up = current_state @ self.gate_up_proj.base_layer.weight[expert_idx]
+            gate_up = gate_up + self.gate_up_proj_bias[expert_idx]
+            gate_up[..., ::2] += gate_delta_all[token_idx]
+            gate_up[..., 1::2] += up_delta_all[token_idx]
+            gate = gate_up[..., ::2].clamp(max=self.limit)
+            up = gate_up[..., 1::2].clamp(min=-self.limit, max=self.limit)
+            mid = (up + 1) * (gate * torch.sigmoid(gate * self.alpha))
+            output = mid @ self.down_proj.base_layer.weight[expert_idx] + self.down_proj_bias[expert_idx]
+            output = (
+                output
+                + F.linear(
+                    F.linear(mid, self.get_lora_A_weight("down_proj")),
+                    self.get_lora_B_weight("down_proj"),
+                )
+                * scale
+            )
+            output = output * top_k_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, output.to(final_hidden_states.dtype))
+        return final_hidden_states
 
     def _fused_forward(
         self,
@@ -860,6 +986,10 @@ class LoraIndependentExperts(nn.Module):
         # Validate before stealing — see LoraSharedExperts.__init__ for the
         # rationale on this ordering.
         _validate_fused_layout(base_layer)
+        if _is_gpt_oss_interleaved_layout(base_layer):
+            raise NotImplementedError(
+                "GPT-OSS Quack currently supports shared expert LoRA only; set `share_expert_lora: true`."
+            )
 
         self.r = r
         self.lora_alpha = lora_alpha

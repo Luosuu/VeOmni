@@ -302,6 +302,7 @@ VeOmni MoE-LoRA wrappers require the **v5 fused experts layout** (`gate_up_proj`
 | `qwen3_vl_moe`     | fused `gate_up_proj` | VLM; FQN includes `model.language_model.`. |
 | `qwen3_omni_moe`   | fused `gate_up_proj` | Thinker tower. |
 | `deepseek_v3` (v5) | fused `gate_up_proj` | Per-expert disk → fused via on-load converter. |
+| `gpt_oss`           | interleaved `gate_up_proj` | Shared expert LoRA via the GPT-OSS Quack kernel. |
 
 DeepSeek-V3 also exposes **shared experts** (`mlp.shared_experts.{gate,up,down}_proj`)
 implemented as plain `nn.Linear`. Add them to `lora_modules` if you want PEFT to LoRA them
@@ -314,7 +315,8 @@ Each MoE-LoRA wrapper dispatches based on `model.ops_implementation.moe_implemen
 | `moe_implementation` | non-EP | EP | Notes |
 |---|---|---|---|
 | `fused_triton` | fused triton kernel | fused triton kernel | Recommended for training. |
-| `eager` | eager loop (reference) | not supported (raises) | Reference / fallback for NPU and Quack. |
+| `fused_quack` | GPT-OSS shared-LoRA kernel | GPT-OSS shared-LoRA kernel | GPT-OSS only; independent expert LoRA is unsupported. |
+| `eager` | eager loop (reference) | not supported (raises) | Reference / fallback. |
 
 The fused path lives in `veomni/lora/ops/moe_group_gemm.py` and reuses the same
 `group_gemm_same_nk` / `group_gemm_same_mn` primitives (from `veomni/ops/kernels/moe/_kernels/`)
@@ -337,7 +339,8 @@ When `train.accelerator.ep_size > 1`, base experts are sharded along the expert 
   `_collect_ep_replicated_lora_param_ids` in `veomni/optim/optimizer.py` — to skip the
   EP all-reduce for these replicated params so the global grad-norm matches EP=1.
 
-Both modes work with FSDP2 + EP. EP is only supported on the `fused_triton` forward path.
+Both modes work with FSDP2 + EP on the standard fused layout. GPT-OSS supports
+shared mode with FSDP2 + EP through the `fused_quack` forward/backward path.
 
 ### 5.5 Save / load artefacts
 
